@@ -376,7 +376,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       ind_state = INDICATION_DISABLE;
       advertising = true;
       state = IDLE;
-
       break;
 
     // *******************************   PAIRING EVENT   *********************************
