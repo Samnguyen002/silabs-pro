@@ -41,7 +41,7 @@ typedef enum
     BUTTON_ID_2,
     BUTTON_ID_3,
     BUTTON_ID_INVALID = 0xFF
-}button_id_t;
+} button_id_t;
 
 // Button event types, 
 typedef enum
@@ -49,7 +49,7 @@ typedef enum
     BUTTON_EVENT_PRESSED,   // Button was pressed
     BUTTON_EVENT_RELEASED,  // Button was released
     BUTTON_EVENT_HELD       // Button held for long duration (optional)
-}button_event_type_t;
+} button_event_type_t;
 
 // Button service operating mode (for specific application)
 typedef enum
@@ -58,7 +58,7 @@ typedef enum
     BUTTON_MODE_NORMAL,
     BUTTON_MODE_PAIRING,    
     BUTTON_MODE_CUSTOM_     // Represent for specific application
-}button_mode_t;
+} button_mode_t;
 
 /*******************************************************************************
  *****************************   STRUCTURES   **********************************
@@ -76,7 +76,7 @@ typedef struct
 typedef struct 
 {
     bool enabled;      //< Is this button enabled?
-}button_config_t;
+} button_config_t;
 
 /*******************************************************************************
  ***************************   CALLBACK TYPES   ********************************

@@ -7,7 +7,7 @@ typedef struct
 {
     uint8_t data[QUEUE_SLOT_SIZE];
     uint16_t len;
-}queue_slot_t;
+} queue_slot_t;
 
 // Define the context of fragments in one transmission
 typedef struct 
@@ -19,7 +19,7 @@ typedef struct
     bool checksum_valid;
     bool is_first_fragment;
     bool is_complete;
-}defrag_context_t;
+} defrag_context_t;
 
 static queue_slot_t queue[QUEUE_SLOT];
 static defrag_context_t defrag_cxt = {0};

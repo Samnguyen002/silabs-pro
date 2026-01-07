@@ -59,4 +59,4 @@ void app_button_pairing_enable(void);
  */
 void app_button_pairing_disable(void);
 
-#endif // APP_BUTTON_PAIRING_COMPLETE_H
+#endif 

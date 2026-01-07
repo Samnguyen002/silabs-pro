@@ -85,7 +85,7 @@
 // Relate to display 
 #define X_BORDER    0
 #define Y_BORDER    0
-#define SCREEN_REFRESH_PERIOD   (32768/4)
+#define SCREEN_REFRESH_PERIOD   (32768/4)   // Not use
 
 typedef enum
 {
@@ -97,7 +97,7 @@ typedef enum
   enable_indication,
   running,
   handle_rxdata
-}conn_state_t;
+} conn_state_t;
 
 typedef enum
 {
@@ -107,7 +107,7 @@ typedef enum
   PROMPT_CONFIRM_PASSKEY,
   BOND_SUCCESS,
   BOND_FAILURE
-}pair_state_t;
+} pair_state_t;
 
 typedef struct {
   uint8_t  connection_handle;
@@ -135,7 +135,7 @@ conn_state_t conn_state;
 conn_state_t indi_state;
 static volatile pair_state_t state = IDLE;
 
-// [DISPLAY] defaults for strings to manipulate (thao tác) on display
+// [DISPLAY] Default strings and context used to show role and passkey on the LCD display
 static char role_display_string[] = "   INITIATOR   ";
 static char passkey_display_string[] = "00000000000000";
 static uint32_t xOffset, yOffset;
@@ -175,7 +175,7 @@ void graphics_update(void);
 void graphics_AppendString(char *str);
 void graphics_clear_PreviousString(void);
 void print_empty_line(uint8_t n_line);
-// Depend on pair_state_t to display any string (paskey, bonding state,...)
+// Depends on pair_state_t to display any string (passkey, bonding state, ...)
 void refresh_display(void);   // will be called in timer callback or loopback
 
 // Callbacks function for button events
@@ -211,7 +211,6 @@ void app_process_action(void)
           LOG_INFO("->Length: %d bytes", (int)payload_len);
           LOG_INFO("->Data: \"%.*s\" ", (int)payload_len, payload);
           
-          // TODO: Process your payload here
         }
         else
         {
@@ -272,6 +271,12 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       LOG_BOOT("I/O DISPLAYYESNO");
       LOG_BOOT("Bonding with LE Secure mode, with authentication,...");
 
+      passkey = make_passkey_from_address(address);
+      LOG_BOOT("Passkey: %lu", passkey);
+      sc = sl_bt_sm_set_passkey(passkey);
+      app_assert_status(sc);
+      LOG_BOOT("Enter the fixed passkey for stack: %lu", passkey);
+
       sc = sl_bt_sm_set_bondable_mode(1);
       app_assert_status(sc);
       LOG_BOOT("Bondings allowed");
@@ -315,16 +320,16 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
         if(find_service_in_advertisement(&(evt->data.evt_scanner_legacy_advertisement_report.data.data[0]),
                                          evt->data.evt_scanner_legacy_advertisement_report.data.len) == SL_STATUS_OK)
         {
-          LOG_SCANN(">Discover/find my service in AD structure");
+          LOG_SCANN("Discover/find my service in AD structure");
 
           // Then stop scanning for a while
           sc = sl_bt_scanner_stop();
           app_assert_status(sc);
-          LOG_SCANN(">Stopped scanning after finding my service");
+          LOG_SCANN("Stopped scanning after finding my service");
 
           // And connect to that device, guarantee the number of connections < Max
           if (active_connections_num < SL_BT_CONFIG_MAX_CONNECTIONS) {
-            LOG_CONN(">Connecting to the central device, active_connection_num %d", (int)active_connections_num);
+            LOG_CONN("Connecting to the central device, active_connection_num %d", (int)active_connections_num);
             sc = sl_bt_connection_open(evt->data.evt_scanner_legacy_advertisement_report.address,
                                        evt->data.evt_scanner_legacy_advertisement_report.address_type,
                                        sl_bt_gap_phy_1m,
@@ -498,14 +503,14 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
         // Print and process Input data
         if(defrag_push_data(data, len))
         {
-          LOG_INFO("DONE PUSH data");
+          LOG_CONN("DONE PUSH data");
           indi_state = handle_rxdata;
         }
       }
 
       sc = sl_bt_gatt_send_characteristic_confirmation(evt->data.evt_gatt_characteristic_value.connection);
       app_assert_status(sc);
-      LOG_INFO("Send an indication confirmation");
+      LOG_CONN"Send an indication confirmation");
       break;
     
     // -------------------------------
@@ -825,12 +830,31 @@ static void remove_connection(uint8_t connection)
 }
 
 /*******************************************************************************
+ ***************************   PASSKEY FUNCTIONS   *****************************
+ ******************************************************************************/
+
+// Make an passkey random from the device's address 
+#if(IO_CAPABILITY != KEYBOARDONLY)
+static uint32_t make_passkey_from_address(bd_addr address)
+{
+  static uint32_t passkey;
+  // bd_addr has size = 6byte (uint8 addr[6])
+  for(uint32_t i = 0; i < sizeof(bd_addr); i++)
+  {
+    passkey += (address.addr[i] << 8);
+  }
+
+  return passkey%1000000;   //6-digit
+}
+#endif
+
+/*******************************************************************************
  ***************************   GRAPHIC FUNCTIONS   *****************************
  *******************************************************************************/
 
 void graphics_init(void)
 {
-  EMSTATUS status;    // uint32_t
+  EMSTATUS status;    
 
   status = sl_board_enable_display();
   if (status != SL_STATUS_OK) 
@@ -861,8 +885,7 @@ void graphics_init(void)
   GLIB_setFont(&glibContext, (GLIB_Font_t *)&GLIB_FontNormal8x8);
 
   graphics_AppendString(role_display_string);
-  LOG_INFO("[LCD] Display ROLE");
-  print_empty_line(2);
+
   // Update Display always hase after drawing
   graphics_update();
 }

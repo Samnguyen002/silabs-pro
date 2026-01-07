@@ -122,13 +122,14 @@ Fragment N:  [Payload(remaining)] [Checksum(1)] → variable
 
 ## Pairing & Security
 
+### Role
+- Responder 
+
 ### Security Configuration
 - **Method**: Numeric Comparison (MITM Protection enabled)
 - **I/O Capability**: Display Yes/No (DISPLAYYESNO)
 - **Authentication**: LE Secure pairing with bonding
-- **Passkey**: 
-  - **Numeric Comparision**: Random passkey 6-digit for each pairing process
-  - **PassEntry**: Fixed passkey derived from Bluetooth device address (6 bytes). Formula: Uses device MAC address bytes to generate a consistent 6-digit passkey
+- **Bonding**: Long-term keys stored to allow automatic secure reconnection
 
 ### Pairing Flow 
 1. **Boot**: Device advertises and awaits connection

@@ -34,7 +34,7 @@ typedef enum
     DEFRAG_CONTINUE = 0,    // Waiting for more fragments
     DEFRAG_COMPLETE,        // All fragemnts received
     DEFRAG_ERROR            // Error occurred
-}defrag_enum_t;
+} defrag_enum_t;
 
 void queue_init(void);
 
