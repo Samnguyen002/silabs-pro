@@ -168,6 +168,10 @@ static uint8_t find_index_by_connection_handle(uint8_t connection);
 static void add_connection(uint8_t connection, uint8_t *address);
 static void remove_connection(uint8_t connection);
 
+#if(IO_CAPABILITY != KEYBOARDONLY)
+static uint32_t make_passkey_from_address(bd_addr address);
+#endif
+
 // SERCURITY, PASSKEY
 void graphics_init(void);
 void graphics_clear(void);
@@ -246,6 +250,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
   sl_status_t sc;
   uint8_t addr_value[6];
   uint8_t table_index;
+  bd_addr address;
 
   switch (SL_BT_MSG_ID(evt->header)) {
     // -------------------------------
@@ -510,7 +515,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
 
       sc = sl_bt_gatt_send_characteristic_confirmation(evt->data.evt_gatt_characteristic_value.connection);
       app_assert_status(sc);
-      LOG_CONN"Send an indication confirmation");
+      LOG_CONN("Send an indication confirmation");
       break;
     
     // -------------------------------
