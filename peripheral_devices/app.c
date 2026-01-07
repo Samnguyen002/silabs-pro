@@ -69,7 +69,7 @@
 
 // Numeric Comparison
 #define MITM_PROTECTION      (0x01)
-#define IO_CAPABILITY        (DISPLAYYESNO)     //KEYBOARDDISPLAY
+#define IO_CAPABILITY        (DISPLAYYESNO)     // KEYBOARDDISPLAY
 
 #ifndef IO_CAPABILITY 
 #error "Must define which IO capability device supports\r\n"
@@ -97,7 +97,7 @@ typedef enum
   INDICATION_CONFIRM
 }ind_state_t;
 
-// [DISPLAY] defaults for strings to manipulate (thao tác) on display
+// [DISPLAY] Default strings and context used to show role/passkey on the LCD display
 static char role_display_string[] = "   RESPONDER   ";
 static char passkey_display_string[] = "00000000000000";
 static uint32_t xOffset, yOffset;
@@ -134,11 +134,11 @@ static void timer_handler(sl_sleeptimer_timer_handle_t *handle, void *data);
 static sl_status_t send_current_time_notification(void);
 sl_status_t send_usart_packet_over_ble(uint8_t *payload, size_t payload_len);
 
-// reading data fucntion
+// Reading data fucntion
 size_t read_line_from_iostream(sl_iostream_t *handle, uint8_t *out_buf, 
                                size_t max_len, uint32_t timeout);
 
-// SERCURITY, PASSKEY
+// PASSKEY
 #if (IO_CAPABILITY != KEYBOARDONLY)
 static uint32_t make_passkey_from_address(bd_addr address);
 #endif
@@ -147,7 +147,7 @@ void graphics_clear(void);
 void graphics_update(void);
 void graphics_AppendString(char *str);
 void print_empty_line(uint8_t n_line);
-// Depend on pair_state_t to display any string (paskey, bonding state,...)
+// Depends on pair_state_t to display any string (passkey, bonding state, ...)
 void refresh_display(void);   // will be called in timer callback or loopback
 
 // Callbacks function for button events
@@ -163,10 +163,10 @@ void app_init(void)
   app_button_pairing_init(button_event_handler);
 
   count = get_burtc_count();
-  printf("BURTC Count: %lu\r\n", (unsigned long)count);
+  LOG_INFO("BURTC Count: %lu", (unsigned long)count);
 
   time = convert_count_to_seconds(count, 32768);
-  printf("Elapsed time (seconds): %lu\r\n", (unsigned long)time);
+  LOG_INFO("Elapsed time (seconds): %lu", time);
 }
 
 // Application Process Action.
@@ -193,26 +193,22 @@ void app_process_action(void)
   size_t len = read_line_from_iostream(sl_iostream_vcom_handle, (uint8_t *)buffer, BUFSIZE, 1000);
   if(len > 0)
   {
-    // reomve trailing CR/LF
-    while(len > 0 && (buffer[len-1] == '\n' || buffer[len-1] == '\r'))
+    // remove trailing CR/LF
+    while (len > 0 && (buffer[len - 1] == '\n' || buffer[len - 1] == '\r'))
     {
       buffer[--len] = '\0';
     }
-    printf("\r\nReceived: %d bytes: \r\n> %s\r\n", (int)len, (char *)buffer);
+    LOG_INFO("\r\nReceived: %lu bytes: %s", len, (char *)buffer);
 
     sc = send_usart_packet_over_ble((uint8_t *)buffer, len);
     if(sc == SL_STATUS_OK)
     {
-      printf("send Indication OK\r\n");
+      LOG_INFO("send Indication OK");
     }
   }
 
   if (app_is_process_required()) {
-    /////////////////////////////////////////////////////////////////////////////
-    // Put your additional application code here!                              //
-    // This is will run each time app_proceed() is called.                     //
-    // Do not call blocking functions from here!                               //
-    /////////////////////////////////////////////////////////////////////////////
+
   }
 }
 
@@ -235,7 +231,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
     // Do not call any stack command before receiving this boot event!
     case sl_bt_evt_system_boot_id:
       // Printf BLE version
-      printf("\r\n-------------------Bluetooth stack booted: v%d.%d.%d+%08lx-------------------\r\n",
+      LOG_BOOT("Bluetooth stack booted: v%d.%d.%d+%08lxr\n",
                    evt->data.evt_system_boot.major,
                    evt->data.evt_system_boot.minor,
                    evt->data.evt_system_boot.patch,
@@ -244,7 +240,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       // Extract unique ID from BT Address
       sc = sl_bt_gap_get_identity_address(&address, &address_type);
       app_assert_status(sc);
-      printf("Bluetooth %d -> %s address: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
+      LOG_BOOT("Bluetooth %d -> %s address: %02X:%02X:%02X:%02X:%02X:%02X",
                         (int)address_type,
                         address_type ? "static random" : "public device",
                         address.addr[5],
@@ -263,31 +259,30 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       LOG_BOOT("I/O DISPLAYYESNO");
       LOG_BOOT("Bonding with LE Secure mode, with authentication,...");
 
-      passkey = make_passkey_from_address(address);
-      printf("[SECURITY] Passkey: %lu\r\n", passkey);
-      sc = sl_bt_sm_set_passkey(passkey);
-      app_assert_status(sc);
-      printf("[SECURITY] Enter the fixed passkey for stack: %lu\r\n", passkey);
+      // passkey = make_passkey_from_address(address);
+      // LOG_BOOT("Passkey: %lu", passkey);
+      // sc = sl_bt_sm_set_passkey(passkey);
+      // app_assert_status(sc);
+      // LOG_BOOT("Enter the fixed passkey for stack: %lu", passkey);
 
       sc = sl_bt_sm_set_bondable_mode(1);
       app_assert_status(sc);
-      printf("[SECURITY] Bondings allowed\r\n");
+      LOG_BOOT("Bondings allowed");
 
       sc = sl_bt_sm_delete_bondings();
       app_assert_status(sc);
-      printf("[SECURITY] Old bondings deleted\r\n");
-      printf("--- Security Configuration Complete ---\r\n");
+      LOG_BOOT("Old bondings deleted");
 
       // Create an advertising set
       sc = sl_bt_advertiser_create_set(&advertising_set_handle);
       app_assert_status(sc);
-      printf("Create an advertising set: %lu\r\n", (unsigned long)sc);
+      LOG_BOOT("Create an advertising set: %lu", (unsigned long)sc);
 
       // // Generate data for advertising
       // sc = sl_bt_legacy_advertiser_generate_data(advertising_set_handle,
       //                                            sl_bt_advertiser_general_discoverable);
       // app_assert_status(sc);
-      // printf("Generate data for advertising: %lu\r\n", (unsigned long)sc);
+      // LOG_BOOT("Generate data for advertising: %lu", (unsigned long)sc);
 
       // Set advertising interval to 100ms.
       sc = sl_bt_advertiser_set_timing(
@@ -297,12 +292,8 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
         0,   // adv. duration
         0);  // max. num. adv. events
       app_assert_status(sc);
-      printf("Set advertising interval to 100ms completed: %lu\r\n", (unsigned long)sc);
+      LOG_BOOT("Set advertising interval to 100ms completed: %lu", (unsigned long)sc);
 
-      //sl_status_t sl_bt_legacy_advertiser_set_data(uint8_t advertising_set,
-      //                                       uint8_t type,
-      //                                       size_t data_len,
-      //                                       const uint8_t* data);
       sc = sl_bt_legacy_advertiser_set_data(advertising_set_handle,
                                             sl_bt_advertiser_advertising_data_packet,
                                             sizeof(adv_payload),
@@ -312,19 +303,17 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       sc = sl_bt_legacy_advertiser_start(advertising_set_handle,
                                          sl_bt_legacy_advertiser_connectable);
       app_assert_status(sc);
-      printf("Advertising %lu ", (unsigned long)sc);
+      LOG_BOOT("Advertising %lu ", (unsigned long)sc);
       
       advertising =  true;
       if(advertising)
       {
         // Create timer for waking up the system periodically to print "."
-        // Callback: timer_handler
         sl_sleeptimer_start_periodic_timer_ms(&timer_handle, 
                                               DELAY_MS, 
                                               timer_handler, 
                                               NULL, 0, 1);
       }
-
       break;
 
     // -------------------------------
@@ -333,53 +322,46 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       advertising = false;
       //connection_handle = evt->data.evt_gatt_server_characteristic_status.connection;
       connection_handle = evt->data.evt_connection_opened.connection;
-      printf("\r\nConnected to central device %02x\r\n", connection_handle);
+      LOG_CONN("Connected to central device %02x\r\n", connection_handle);
 
       // // Enable encryption on an unencrypted device
       // sc = sl_bt_sm_increase_security(connection_handle);
       // app_assert_status(sc);
-      // printf("[SECURITY] Enable encryption\r\n");
-
+      // LOG_CONN("Enable encryption\r\n");
       break;
 
     // -------------------------------
     // This event indicates that a connection was closed.
     case sl_bt_evt_connection_closed_id:
-
-      // error 0x1008 -> SL_STATUS_BT_CTRL_CONNECTION_TIMEOUT
+      // Error 0x1008 -> SL_STATUS_BT_CTRL_CONNECTION_TIMEOUT
       uint16_t reason = evt->data.evt_connection_closed.reason;
-      printf("Connection closed (handle=%d) reason=0x%02x (%d)\r\n",
+      LOG_CONN("Connection closed (handle=%d) reason=0x%02x (%d)",
                evt->data.evt_connection_closed.connection,
                reason, reason);
 
-      // // Generate data for advertising
-      // sc = sl_bt_legacy_advertiser_generate_data(advertising_set_handle,
-      //                                            sl_bt_advertiser_general_discoverable);
       sc = sl_bt_legacy_advertiser_set_data(advertising_set_handle,
                                             sl_bt_advertiser_advertising_data_packet,
                                             sizeof(adv_payload),
                                             adv_payload);
       app_assert_status(sc); 
-      printf("DISCONNECT: Generate data for advertising again\r\n");
+      LOG_CONN("DISCONNECT: Generate data for advertising again");
 
       sc = sl_bt_sm_delete_bondings();
       app_assert_status(sc);
-      printf("[SECURITY] All bonding deleted\r\n");
+      LOG_CONN("All bonding deleted");
 
       // Restart advertising after client has disconnected.
       sc = sl_bt_legacy_advertiser_start(advertising_set_handle,
                                          sl_bt_legacy_advertiser_connectable);
       app_assert_status(sc);
-      printf("Restart advertising");
+      LOG_CONN("Restart advertising");
       
       connection_handle = 0xFF;
       ind_state = INDICATION_DISABLE;
       advertising = true;
       state = IDLE;
-
       break;
 
-    // *******************************   PAIRING EVENT   *********************************
     // -------------------------------
     // Triggered whenever the connection parameters are changed and at any
     // time a connection is established
@@ -387,16 +369,16 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       switch(evt->data.evt_connection_parameters.security_mode)
       {
         case sl_bt_connection_mode1_level1:
-          printf("[SEC-LEVEL] No Security\r\n");
+          LOG_PAIRING("No Security\r\n");
           break;
         case sl_bt_connection_mode1_level2:
-          printf("[SEC-LEVEL] Encryption without unauthenticated (JustWorks)\r\n");
+          LOG_PAIRING("[SEC-LEVEL] Encryption without unauthenticated (JustWorks)");
           break;
         case sl_bt_connection_mode1_level3:
-          printf("[SEC-LEVEL] Authenticated pairing with encryption (Legacy Pairing)\r\n");
+          LOG_PAIRING("[SEC-LEVEL] Authenticated pairing with encryption (Legacy Pairing)");
           break;
         case sl_bt_connection_mode1_level4:
-          printf("[SEC-LEVEL] Authenticated LL Secure Connections with encryption\r\n");
+          LOG_PAIRING("[SEC-LEVEL] Authenticated LL Secure Connections with encryption");
           break;
         default:
           break;
@@ -406,21 +388,23 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
     // -------------------------------
     // Responder or Peripheral need to comfirm the bonding request
     case sl_bt_evt_sm_confirm_bonding_id:
-      printf("[SECURITY] Bonding confirmation request received\r\n");
+      LOG_BONDING("Bonding confirmation request received");
       // Accept or reject the bonding request: 0-reject, 1 accept
       sc = sl_bt_sm_bonding_confirm(connection_handle, 1);
       app_assert_status(sc);
-      printf("[SECURITY] Bonding confirmed automatically (PassKey)\r\n");
+      LOG_BONDING("Bonding confirmed automatically (PassKey)");
       break;
+
     // -------------------------------
     // Identifier of the passkey_display event
     case sl_bt_evt_sm_passkey_display_id:
       // Display passkey
-      LOG_PAIRING("evt_passkey_display Passkey: %lu\r\n", evt->data.evt_sm_passkey_display.passkey);
+      LOG_PAIRING("evt_passkey_display Passkey: %lu", evt->data.evt_sm_passkey_display.passkey);
       passkey = evt->data.evt_sm_passkey_display.passkey;
       state = DISPLAY_PASSKEY;
       refresh_display();
       break;
+
     // -------------------------------
     // Identifier of the confirm_passkey event
     case sl_bt_evt_sm_confirm_passkey_id:
@@ -433,24 +417,27 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       state = PROMPT_YESNO;
       refresh_display();
       break;
+
     // -------------------------------
     // Triggered when the pairing or bonding procedure is successfully completed.
     case sl_bt_evt_sm_bonded_id:
-      printf("[SECURITY] Bond success, bonding handle 0x%02x\r\n", evt->data.evt_sm_bonded.bonding);
+      LOG_BONDING("Bonding process, bonding handle 0x%02x", evt->data.evt_sm_bonded.bonding);
       state = BOND_SUCCESS;
       refresh_display();
       break;
 
+    // -------------------------------
     // Bonding failed, not affect the connection and exchange
     case sl_bt_evt_sm_bonding_failed_id:
-      printf("[SECURITY] Bonding failed, reason 0x%2X\r\n",
+      LOG_BONDING("Bonding failed, reason 0x%2X\r\n",
                 evt->data.evt_sm_bonding_failed.reason);
       sc = sl_bt_connection_close(evt->data.evt_sm_bonding_failed.connection);
-      printf("CLOSE connection\r\n");
+      LOG_BONDING("CLOSE connection");
       state = BOND_FAILURE;
       refresh_display();
       break;
 
+    // -------------------------------
     case sl_bt_evt_system_external_signal_id:
       // Handle external signals
       if(evt->data.evt_system_external_signal.extsignals == PROMPT_CONFIRM_PASSKEY)
@@ -466,8 +453,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
         }
       }
       break;
-
-    // *************************************************************************************
 
     // -------------------------------
     // This event indicates that the value of an attribute in the local GATT
@@ -485,23 +470,24 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
                                                     20,
                                                     &data_recv_len,
                                                     data_recv);
-        (void)data_recv_len;   // be declared but not using in this part
+        (void)data_recv_len;   
         app_assert_status(sc);
         if (sc != SL_STATUS_OK) 
         {
-          printf("Client wrote error\r\n");
+          LOG_CONN("ERROR: Client wrote error");
           break;
         }
 
-        printf("written value by client: %s\r\n",data_recv);
-        // printf("last byte: %c\r\n", data_recv[data_recv_len-1]);
+        data_recv[data_recv_len] = '\0'; 
+        LOG_CONN("Written value by client: %s",data_recv);
+        // LOG_INFO("Last byte: %c", data_recv[data_recv_len-1]);
       }
       break;
 
     // -------------------------------
     // This event occurs in two cases: 
     // when client send/dispatch GATT command to enable/disable the notification/indication for CCCD (1st bits or 2nd bits)
-    // or when server sends an ACK indication to client
+    // or when server obtains an ACK indication from client
     case sl_bt_evt_gatt_server_characteristic_status_id:
       // this field contains the characteristic handle which client changed its CCCD
       if(gattdb_current_time == evt->data.evt_gatt_server_characteristic_status.characteristic)
@@ -509,13 +495,13 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
         // A local Client Characteristic Configuration descriptor was changed in the gattdb_current_time characteristic.
         // sl_bt_gatt_notification = 0x1, /**< (0x1) Notification */
         // &and vs client_config_flags (0x01) to check if client enabled notification
-        printf("client_config_flags (gattdb_usart_packet) 0x%02x\r\n", 
-                evt->data.evt_gatt_server_characteristic_status.client_config_flags);
+        LOG_CONN("client_config_flags (gattdb_usart_packet) 0x%02x", 
+                   evt->data.evt_gatt_server_characteristic_status.client_config_flags);
         if(evt->data.evt_gatt_server_characteristic_status.client_config_flags & sl_bt_gatt_notification)
         {
-          printf("Notification enabled\r\n");
+          LOG_CONN("Notification enabled");
           
-          // send notification of the current time
+          // Send notification of the current time
           sc = send_current_time_notification();
           app_assert_status(sc);
           printf("Sent current time\r\n");
@@ -534,18 +520,18 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       if(gattdb_usart_packet == evt->data.evt_gatt_server_characteristic_status.characteristic)
       {
         // Checking the client_configs_flags is correct 0x02 sl_bt_gatt_indication, 0x02 & 0x02 = 0x02
-        printf("client_config_flags (gattdb_usart_packet) 0x%02x\r\n", 
-                evt->data.evt_gatt_server_characteristic_status.client_config_flags);
+        LOG_CONN("client_config_flags (gattdb_usart_packet) 0x%02x", 
+                   evt->data.evt_gatt_server_characteristic_status.client_config_flags);
         if((evt->data.evt_gatt_server_characteristic_status.client_config_flags & sl_bt_gatt_indication) == 0x2
             && (ind_state == INDICATION_DISABLE))
         {
           ind_state = INDICATION_ENABLE;
-          printf("Indication enabled\r\n");
+          LOG_CONN("Indication enabled");
 
-          sc = send_usart_packet_over_ble((uint8_t *)"abc", 3);
+          sc = send_usart_packet_over_ble((uint8_t *)"WELCOME", 7);
           if(sc == SL_STATUS_OK)
           {
-            printf("Sent first indication\r\n");
+            LOG_CONN("Sent first indication");
           }
         }
         // verify the confirmation after every indication sent (sl_bt_gatt_server_confirmation (enum) and status_flags)
@@ -553,13 +539,13 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
                   && (ind_state == INDICATION_ENABLE || ind_state == INDICATION_CONFIRM))
         {
           ind_state = INDICATION_CONFIRM;
-          printf("Client confirmed indication\r\n");
+          LOG_CONN("Client confirmed indication");
           fragment_queue_on_confirmation(connection_handle, gattdb_usart_packet);
         }
         else
         {
           ind_state = INDICATION_DISABLE;
-          printf("Indication disabled\r\n");
+          LOG_CONN("Indication disabled");
         }
       }
 
@@ -574,7 +560,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       //   sl_bt_gatt_server_confirmation  = 0x2  /**< (0x2) Characteristic confirmation
       //                                               has been received. */
       // } sl_bt_gatt_server_characteristic_status_flag_t;
-
       break;
 
     // -------------------------------
@@ -593,7 +578,20 @@ static void timer_handler(sl_sleeptimer_timer_handle_t *handle, void *data)
     printf(".");
 }
 
-// Read data from computer until the data of buffer is enough (time_out, see '\0')
+/**
+ * @brief Read a line from an iostream into a buffer with timeout.
+ *
+ * Reads available bytes from the given iostream handle until a newline
+ * ('\n' or '\r') is encountered, the buffer is full (leaving room for a
+ * null terminator), or the timeout (in milliseconds) expires. The function
+ * polls the iostream and sleeps briefly when no data is available.
+ *
+ * @param handle   iostream handle to read from (e.g., `sl_iostream_vcom_handle`)
+ * @param out_buf  Output buffer where data will be copied and null-terminated
+ * @param max_len  Maximum number of bytes to write to out_buf (including null terminator)
+ * @param timeout  Timeout in milliseconds to wait for a complete line
+ * @return Number of bytes copied into out_buf (excluding null terminator)
+ */
 size_t read_line_from_iostream(sl_iostream_t *handle, uint8_t *out_buf, size_t max_len, uint32_t timeout)
 {
   uint32_t waited = 0;
@@ -605,60 +603,70 @@ size_t read_line_from_iostream(sl_iostream_t *handle, uint8_t *out_buf, size_t m
     return 0;
   
   // CR/LF = \r and \n
-  // Clear output buffer, guarrantee it that is valid string
+  // Clear output buffer to guarantee a valid C-string
     out_buf[0] = '\0';
 
     while (waited < timeout && total < (max_len - 1)) 
     {
-        // đọc whatever có sẵn, tối đa tempbuf
+        // read whatever data is available (up to tempbuf size)
         sl_status_t st = sl_iostream_read(handle, tempbuf, sizeof(tempbuf), &bytes_read);
         if (st == SL_STATUS_OK && bytes_read > 0) 
         {
-            // copy vào output
-            printf("bytes_read: %d\r\n", bytes_read);
+            // Copy to output buffer
+            LOG_INFO("bytes_read: %lu", bytes_read);
             size_t copy = bytes_read;
             if (total + copy > (max_len - 1)) 
             {
-                // copy vừa đủ độ dài còn của buffer
+                // limit copy to remaining output buffer space
                 copy = (max_len - 1) - total;
             }
             memcpy(out_buf + total, tempbuf, copy);
             total += copy;
             out_buf[total] = '\0';
 
-            // if have newline or CR
+            // return early if newline or CR present
             if (memchr(out_buf, '\n', total) != NULL || memchr(out_buf, '\r', total) != NULL) 
             {
                 return total;
             }
 
-            // Có dữ liệu, reset timeout (optional) để đợi phần còn lại
+            // Data received; reset timeout (optional) to wait for remaining bytes
             waited = 0;
-            // continue ngay - không delay lâu, để nhanh gom
+            // Continue immediately to aggregate more data without a long delay
             continue;
         }
 
-        // không có dữ liệu lần này -> chờ một ít để cho ISR/DMA cập nhật buffer
+        // No data this iteration: sleep briefly to allow ISR/DMA to refill the buffer
         sl_sleeptimer_delay_millisecond(20);
         waited += 20;   // 10 is a poll interval
     }
 
-    // Nếu timeout và có 1 ít dữ liệu, trả về nó; hoặc 0 nếu không có gì.
+    // On timeout, return any collected data; otherwise return 0
     return total;
-}
+} 
 
+/**
+ * @brief Assemble and send a Current Time notification to all connected clients.
+ *
+ * This helper reads the BURTC counter, converts it into elapsed seconds, and
+ * constructs a 10-byte Current Time structure (year, month, day, hour, minute,
+ * second, day_of_week, fractions256, adjust_reason) which is sent via
+ * `sl_bt_gatt_server_notify_all()` on `gattdb_current_time`.
+ *
+ * @return SL_STATUS_OK on successful notification send, otherwise an error code
+ */
 static sl_status_t send_current_time_notification(void)
 {
   sl_status_t sc;
-  uint8_t current_time[10];     // in gatt_db -> looke at gattdc_attribute_field_26
+  uint8_t current_time[10];     
   size_t len = 0;
 
-  // get current time from BURTC
+  // Get current time from BURTC
   count = get_burtc_count();
   time = convert_count_to_seconds(count, 32768);
-  printf("Get current time from BURTC: %lu seconds\r\n", (unsigned long)time);
+  LOG_CONN("Get current time from BURTC: %lu seconds", (unsigned long)time);
 
-  // Timline (Milestone): 2025/11/07 03:40:10 (năm=2025, tháng=11, ngày=7, giờ=2, phút=20, giây=10)
+  // Timline (Milestone): 2025/11/07 03:40:10 (year=2025, month=11, day=7, hour=3, minute=40, second=10)
   const uint16_t base_year  = 2025;
   const uint8_t  base_month = 11;
   const uint8_t  base_day   = 7;
@@ -667,13 +675,13 @@ static sl_status_t send_current_time_notification(void)
   const uint8_t  base_sec   = 10;
   const uint8_t  base_dow   = 5;  // 5 is Friday (1->7) 
 
-  // get total senconds
+  // Get total seconds
   uint32_t total_seconds = (uint32_t)base_hour * 3600
                          + (uint32_t)base_min  * 60
                          + (uint32_t)base_sec
                          + time;
 
-  // caculate the day, hour, miniutes and seconds 
+  // Calculate the days elapsed, hour, minutes and seconds
   uint32_t days_elapsed = total_seconds / 86400;
   uint32_t sec_of_day   = total_seconds % 86400;
 
@@ -702,7 +710,7 @@ static sl_status_t send_current_time_notification(void)
   current_time[5] = minute;
   current_time[6] = second;
   current_time[7] = day_of_week;
-  current_time[8] = 0;      // Fractions256 = 0 nếu không hỗ trợ phân giây
+  current_time[8] = 0;      // Fractions256 = 0 if sub-second resolution is not supported
   current_time[9] = 0;      // Adjust Reason = 0 (no special reason)
 
   len = sizeof(current_time);
@@ -713,7 +721,7 @@ static sl_status_t send_current_time_notification(void)
                                     current_time);
   if(sc == SL_STATUS_OK)
   {
-    printf("Notification sent: ");
+    LOG_INFO("Notification sent: ");
     for(int i = 0; i < 10; i++)
     {
       printf("%02d : ", (int)current_time[i]);
@@ -722,30 +730,42 @@ static sl_status_t send_current_time_notification(void)
   }
   else
   {
-    printf("Nofidication sendinf failed\r\n");
+    LOG_INFO("Notification sending failed");
   }
 
   return sc;
-}
+} 
 
-// trả về SL_STATUS_OK nếu đã xếp/khởi gửi, hoặc lỗi nếu điều kiện sai
+/**
+ * @brief Queue a USART payload for transmission over BLE using indications.
+ *
+ * This function validates that a connection is active and the payload length
+ * is within the allowed range, then prepares fragment(s) for transmission by
+ * calling `fragment_queue_prepare()` which handles fragmentation and flow
+ * control. It returns the status code from the fragment queue helper or an
+ * error if preconditions are not met.
+ *
+ * @param[in] payload Pointer to payload bytes
+ * @param[in] payload_len Length of payload in bytes (must be >0 and <= DEFRAG_MAX_PAYLOAD)
+ * @return SL_STATUS_OK if successfully queued, or an error status
+ */
 sl_status_t send_usart_packet_over_ble(uint8_t *payload, size_t payload_len)
 {
   if (connection_handle == 0xFF) 
   {
-    printf("connection_handle\r\n");
+    LOG_INFO("Connection_handle invalid");
     return SL_STATUS_BT_CTRL_UNKNOWN_CONNECTION_IDENTIFIER;
   }
 
   if (payload_len == 0 || payload_len > 200) 
   {
-    printf("ERROR: Invalid payload length %d (max 200)\r\n", (int)payload_len);
+    LOG_INFO("ERROR: Invalid payload length %d (max 200)", (int)payload_len);
     return SL_STATUS_INVALID_PARAMETER; // 40bytes for 2 fragments
   }
 
   return fragment_queue_prepare(connection_handle, gattdb_usart_packet,
                                 payload, payload_len);
-}
+} 
 
 /*******************************************************************************
  ***************************   PASSKEY FUNCTIONS   *****************************
@@ -787,7 +807,7 @@ void graphics_init(void)
     while (1) ;
   }
 
-  printf("[LCD] Enable display\r\n");
+  LOG_INFO("[LCD] Enable display");
   status = GLIB_contextInit(&glibContext);
   if (GLIB_OK != status) 
   {
@@ -799,11 +819,10 @@ void graphics_init(void)
   glibContext.backgroundColor = Black;    
   glibContext.foregroundColor = White;    // foreground: nen truoc (thuong la chu)
 
-  /* Use Normal font */
+  // Use Normal font
   GLIB_setFont(&glibContext, (GLIB_Font_t *)&GLIB_FontNormal8x8);
 
   graphics_AppendString(role_display_string);
-  printf("[LCD] Display ROLE\r\n");
 
   // Update Display always hase after drawing
   graphics_update();
@@ -898,7 +917,7 @@ void button_event_handler(const button_event_t *evt)
   {
     if(state == PROMPT_YESNO)
     {
-      LOG_PAIRING("User response received: %s\r\n", 
+      LOG_PAIRING("User response received: %s", 
                     (evt->button_id == BUTTON_ID_0) ? "YES" : "NO");
 
       // No acception for calling API ble Gecko in ISR context

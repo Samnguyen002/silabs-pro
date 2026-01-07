@@ -16,7 +16,7 @@ void app_iostream_usart_init(void)
 
   // Output on vcom usart instance
   // my instance name is sl_iostream_exp
-  const char str1[] = "USART I/O stream start initializing...\r\n\r\n";
+  const char str1[] = "USART I/O stream start initializing...\r\n";
   sl_iostream_write(sl_iostream_vcom_handle, str1, strlen(str1));
 
   // setting default stream

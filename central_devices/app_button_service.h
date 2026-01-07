@@ -67,9 +67,9 @@ typedef enum
 // Pack the button information to be sent/passed to callbacks
 typedef struct 
 {
-  button_id_t button_id;           // Which button triggered the event
-  button_event_type_t event_type;  // Type of button event
-  button_mode_t current_mode;      // Current button service mode
+  button_id_t button_id;           //< Which button triggered the event
+  button_event_type_t event_type;  //< Type of button event
+  button_mode_t current_mode;      //< Current button service mode
 } button_event_t;
 
 // Button configuration
