@@ -207,23 +207,24 @@ void app_process_action(void)
       {
         if (checksum_ok)
         {
-          LOG_ACTION("->Payload Ready:");
-          LOG_ACTION("->Length: %d bytes", (int)payload_len);
-          LOG_ACTION("->Data: \"%.*s\" ", (int)payload_len, payload);
+          LOG_INFO("->Payload Ready:");
+          LOG_INFO("->Length: %d bytes", (int)payload_len);
+          LOG_INFO("->Data: \"%.*s\" ", (int)payload_len, payload);
           
           // TODO: Process your payload here
         }
         else
         {
-          LOG_ACTION("Checksum error\r\n");
+          LOG_INFO("Checksum error");
         }
       }
+
       // Reset for next transmission
       defrag_reset();
     }
     else if(rx_data_state == DEFRAG_ERROR)
     {
-      LOG_ACTION("[ERROR] Defragmentation error\r\n");
+      LOG_INFO("[ERROR] Defragmentation error");
       defrag_reset();
     }
 
@@ -231,11 +232,7 @@ void app_process_action(void)
   }
 
   if (app_is_process_required()) {
-    /////////////////////////////////////////////////////////////////////////////
-    // Put your additional application code here!                              //
-    // This is will run each time app_proceed() is called.                     //
-    // Do not call blocking functions from here!                               //
-    /////////////////////////////////////////////////////////////////////////////
+
   }
 }
 
@@ -282,7 +279,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       sc = sl_bt_sm_delete_bondings();
       app_assert_status(sc);
       LOG_BOOT("Old bondings deleted");
-      printf("--- Security Configuration Complete ---\r\n");
 
       // Set the default connection parameters for subsequent connections
       sc = sl_bt_connection_set_default_parameters(CONN_INTERVAL_MIN,
@@ -301,7 +297,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       LOG_SCANN("Started scanning %02lx", sc);
 
       conn_state = scanning;
-
       break;
 
     // -------------------------------
@@ -341,33 +336,31 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
           }
         }
       }
-
       break;
 
     // -------------------------------
     // This event indicates that a new connection was opened.
     case sl_bt_evt_connection_opened_id:
-      LOG_CONN(">Connected with that device");
+      LOG_CONN("Connected with that device");
       LOG_CONN("Pairing process before discovering services");
 
       // [Note]: Initially, I discovered services right after connecting, but when adding sercurity features
       // the pairing/bonding phase, we should perform pairing first before discovering. Therefore, this discovery
       // phase will be moved to "sl_bt_evt_sm_bonded_id" event after bonding is completed successfully.
       // And the connection to the table conn_properties will be added in "sl_bt_evt_sm_bonded_id" event.
-      
       sc = sl_bt_sm_increase_security(evt->data.evt_connection_opened.connection);
       app_assert_status(sc);
       if(sc == SL_STATUS_OK)
       {
         LOG_CONN("sl_bt_sm_increase_security returned 0x%02lx", sc);
       }
-      LOG_CONN("[SECURITY] Enable encryption\r\n");
+      LOG_CONN("[SECURITY] Enable encryption");
 
       // Reserve the address of connected device
       memcpy(addr_value, evt->data.evt_connection_opened.address.addr, 6);
       //  Add connection to the connection_properties array
       add_connection(evt->data.evt_connection_opened.connection, addr_value);
-      LOG_CONN(">Reserved the addr of server device: ");
+      LOG_CONN("Reserved the addr of server device: ");
       for(int i = 5; i >= 0; i--)
         printf("%02X : ", addr_value[i]);
       printf("\r\n");
@@ -375,7 +368,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       temp_connec_handle = evt->data.evt_connection_opened.connection;
 
       conn_state = pairing;
-      // conn_state = discover_services;
       break;
 
     // -------------------------------
@@ -387,9 +379,8 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       {
         // Save service handle for future reference
         conn_properties[table_index].usart_service_handle = evt->data.evt_gatt_service.service;
-        LOG_DISC(">Service handle was received: %d", (int)evt->data.evt_gatt_service.service);
+        LOG_DISC("Service handle was received: %d", (int)evt->data.evt_gatt_service.service);
       }
-
       break;
 
     // -------------------------------
@@ -404,7 +395,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
         conn_properties[table_index].usartpacket_characteristic_handle = evt->data.evt_gatt_characteristic.characteristic;
         LOG_DISC(">Characteristic handle was received: %d", (int)evt->data.evt_gatt_characteristic.characteristic);
       }
-
       break;
 
     // -------------------------------
@@ -427,9 +417,8 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
                                                         sizeof(usart_char),                                  // uuid_len
                                                         (const uint8_t*)usart_char);                         // uuid    
         app_assert_status(sc);
-        LOG_DISC(">Discovering charateristic and success");
+        LOG_DISC("Discovering charateristic and success");
         conn_state = discover_characteristics;
-        
         break;
       }
 
@@ -438,16 +427,15 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       // -> enable indications
       if(conn_state == discover_characteristics && conn_properties[table_index].usartpacket_characteristic_handle != CHARACTERISTIC_HANDLE_INVALID)
       {
-        LOG_DISC(">Characteristic discovery was completed");
+        LOG_DISC("Characteristic discovery was completed");
         // stop discovering
         sl_bt_scanner_stop();
         sc = sl_bt_gatt_set_characteristic_notification(evt->data.evt_gatt_procedure_completed.connection,
                                                         conn_properties[table_index].usartpacket_characteristic_handle,
                                                         sl_bt_gatt_indication);
         app_assert_status(sc);
-        LOG_ACTION(">Set indication configuration flag into this characteristic");
+        LOG_DISC("Set indication configuration flag into this characteristic");
         conn_state = enable_indication;
-
         break;                                                        
       }
 
@@ -456,7 +444,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       {
         if(active_connections_num < SL_BT_CONFIG_MAX_CONNECTIONS)
         {
-          LOG_ACTION(">Active connection number %d\r\n>>Start scanning other devices", active_connections_num);
+          LOG_CONN("Active connection number %d\r\nStart scanning other devices", active_connections_num);
 
           sc = sl_bt_scanner_start(sl_bt_scanner_scan_phy_1m,
                                   sl_bt_scanner_discover_generic);
@@ -467,10 +455,8 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
         {
           conn_state = running;
         }
-
         break;
       }
-
       break;
 
     // -------------------------------
@@ -478,7 +464,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
     case sl_bt_evt_connection_closed_id:
       sc = sl_bt_sm_delete_bondings();
       app_assert_status(sc);
-      printf("[SECURITY] All bonding deleted\r\n");
+      LOG_BONDING("[SECURITY] All bonding deleted\r\n");
 
       // remove connection from active connections
       remove_connection(evt->data.evt_connection_closed.connection);
@@ -512,18 +498,16 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
         // Print and process Input data
         if(defrag_push_data(data, len))
         {
-          LOG_ACTION(">DONE PUSH data\r\n");
+          LOG_INFO("DONE PUSH data");
           indi_state = handle_rxdata;
         }
       }
 
       sc = sl_bt_gatt_send_characteristic_confirmation(evt->data.evt_gatt_characteristic_value.connection);
       app_assert_status(sc);
-      LOG_ACTION(">Send an indication confirmation");
-
+      LOG_INFO("Send an indication confirmation");
       break;
     
-    // *******************************   PAIRING EVENT   *********************************
     // -------------------------------
     // Triggered whenever the connection parameters are changed and at any
     // time a connection is established
@@ -638,12 +622,10 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
         sc = sl_bt_sm_passkey_confirm(temp_connec_handle, 1);
         if(sc == SL_STATUS_OK)
         {
-          LOG_PAIRING("Passkey confirmed\r\n");
+          LOG_PAIRING("Passkey confirmed");
         }
       }
       break;
-
-    // *************************************************************************************
 
     // -------------------------------
     // Default event handler.
@@ -653,7 +635,12 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
 }
 
 /**
- * @brief Init connection properties
+ * @brief Initialize connection properties table and counters.
+ *
+ * This function resets the internal `conn_properties` table to a known
+ * default state and sets the active connection count to zero. Each entry is
+ * initialized so callers can reliably check for `CONNECTION_HANDLE_INVALID`
+ * to find free slots. Call once at startup and after major state resets.
  */
 static void init_properties(void)
 {
@@ -671,14 +658,13 @@ static void init_properties(void)
   }
 }
 
-/**************************************************************************//**
- * @brief
- *   Function to Read and Cache Bluetooth Address.
- * @param address_type_out [out]
- *   A pointer to the outgoing address_type. This pointer can be NULL.
- * @return
- *   Pointer to the cached Bluetooth Address
- *****************************************************************************/
+/**
+ * @brief Function to Read and Cache Bluetooth Address.
+ * 
+ * @param[out] address_type_out 
+ *    A pointer to the outgoing address_type. This pointer can be NULL.
+ * @return Pointer to the cached Bluetooth Address
+*/
 static bd_addr *read_and_cache_bluetooth_address(uint8_t *address_type_out)
 {
   static bd_addr address;         // static -> local variable is allocated memory when starting main -> no unbehavior
@@ -697,18 +683,25 @@ static bd_addr *read_and_cache_bluetooth_address(uint8_t *address_type_out)
     // <b>sl_bt_gap_public_address (0x0):</b> Public device address
     // <b>sl_bt_gap_static_address (0x1):</b> Static device address
     *address_type_out = address_type;
-    LOG_ACTION("> Address type: %d", (int)(*address_type_out));
+    LOG_INFO("Address type: %d", (int)(*address_type_out));
   }
 
   return &address;
 }
 
+/**
+ * @brief Print the cached Bluetooth address to the console/log.
+ *
+ * This helper obtains/receives the local device address via `read_and_cache_bluetooth_address`
+ * and prints it using `LOG_INFO`. The address type (public vs static random)
+ * is also printed for diagnostic purposes.
+ */
 void printf_bluetooth_address(void)
 {
   uint8_t address_type;
   bd_addr *address = read_and_cache_bluetooth_address(&address_type);
 
-  LOG_ACTION("Bluetooth %s address: %02X:%02X:%02X:%02X:%02X:%02X\r\n",
+  LOG_INFO("Bluetooth %s address: %02X:%02X:%02X:%02X:%02X:%02X",
                address_type ? "static random" : "public device",
                address->addr[5],
                address->addr[4],
@@ -719,8 +712,11 @@ void printf_bluetooth_address(void)
 }
 
 /**
- * @brief Parse AD structure, chekc into AD structures if they have AD type and
- * my custom service's UUID
+ * @brief Scan an advertisement packet's AD structures for known service UUIDs.
+ *
+ * @param[in] data Pointer to the advertisement payload (AD structures)
+ * @param[in] len  Length of the advertisement payload in bytes
+ * @return `SL_STATUS_OK` if a matching UUID is found, `SL_STATUS_FAIL` otherwise
  */
 static sl_status_t find_service_in_advertisement(uint8_t *data, uint8_t len)
 {
@@ -729,7 +725,7 @@ static sl_status_t find_service_in_advertisement(uint8_t *data, uint8_t len)
   uint8_t ad_field_type;    // type 1Byte
   uint8_t i = 0;
   // Parse advertisement packet
-  // printf("Len adv packet %d\r\n", (int)len);
+  // LOG_INFO("Len adv packet %d", (int)len);
   while (i < len) 
   {
     ad_field_length = data[i];
@@ -737,30 +733,35 @@ static sl_status_t find_service_in_advertisement(uint8_t *data, uint8_t len)
 
     if(ad_field_type == 0x06 || ad_field_type == 0x07)    //ad_field_type == 0x02 || ad_field_type == 0x03 ||
     {
-      // printf("AdvPACKET contains the 128bits custom UUID\r\n");
       if(memcmp(&data[i+2], current_time_service, 2) == 0)
       {
-        LOG_ACTION("a");
         return SL_STATUS_OK;
       }
       else if (memcmp(&data[i+2], usart_service, 16) == 0)
       {
-        LOG_SCANN("Find my service's UUID");
+        LOG_SCANN("Found my service's UUID");
         return SL_STATUS_OK;
       }
     }
     // advance to the next AD struct
     i = i + ad_field_length + 1;
-    sl_sleeptimer_delay_millisecond(10);
+    // sl_sleeptimer_delay_millisecond(10);
   }
 
   return SL_STATUS_FAIL;
 }
 
 /**
- * @brief check if the connection_hanlde is connecting
+ * @brief Find the table index for a given connection handle.
+ *
+ * Searches the active portion of the `conn_properties` table for an entry
+ * whose `connection_handle` matches the input. If found, returns the index
+ * (0..active_connections_num-1). If no matching entry exists, returns
+ * `TABLE_INDEX_INVALID`.
+ *
+ * @param connection Connection handle to look up
+ * @return Index in `conn_properties` if found, otherwise `TABLE_INDEX_INVALID`
  */
-
 static uint8_t find_index_by_connection_handle(uint8_t connection)
 {
   // i will be adapt active_connections_num
@@ -775,7 +776,14 @@ static uint8_t find_index_by_connection_handle(uint8_t connection)
 }
 
 /**
- * @brief when connection is successful, reserve handle and address of that device
+ * @brief Add a new active connection to the `conn_properties` table.
+ *
+ * Note: The caller must ensure `active_connections_num < SL_BT_CONFIG_MAX_CONNECTIONS`
+ * before calling this function. The implementation does not perform bounds
+ * checks and will overwrite memory if the caller violates this contract.
+ *
+ * @param[in] connection The connection handle assigned by the stack
+ * @param[in] address    Pointer to a 6-byte Bluetooth address (LSB-first ordering)
  */
 static void add_connection(uint8_t connection, uint8_t *address)
 {
@@ -785,7 +793,9 @@ static void add_connection(uint8_t connection, uint8_t *address)
 }
 
 /**
- * @brief Remove a connection from the connection_properties array
+ * @brief Remove an active connection and compact the table.
+ *
+ * @param[in] connection Connection handle to remove
  */
 static void remove_connection(uint8_t connection)
 {
@@ -816,7 +826,7 @@ static void remove_connection(uint8_t connection)
 
 /*******************************************************************************
  ***************************   GRAPHIC FUNCTIONS   *****************************
- ******************************************************************************/
+ *******************************************************************************/
 
 void graphics_init(void)
 {
@@ -828,14 +838,14 @@ void graphics_init(void)
     while (1) ;
   }
 
-  /* Initialize the DMD module for the DISPLAY device driver. */
+  // Initialize the DMD module for the DISPLAY device driver
   status = DMD_init(0);
   if (DMD_OK != status) 
   {
     while (1) ;
   }
 
-  LOG_ACTION("[LCD] Enable display");
+  LOG_INFO("[LCD] Enable display");
   status = GLIB_contextInit(&glibContext);
   if (GLIB_OK != status) 
   {
@@ -847,11 +857,11 @@ void graphics_init(void)
   glibContext.backgroundColor = Black;    
   glibContext.foregroundColor = White;    // foreground: nen truoc (thuong la chu)
 
-  /* Use Normal font */
+  // Use Normal font
   GLIB_setFont(&glibContext, (GLIB_Font_t *)&GLIB_FontNormal8x8);
 
   graphics_AppendString(role_display_string);
-  LOG_ACTION("[LCD] Display ROLE");
+  LOG_INFO("[LCD] Display ROLE");
   print_empty_line(2);
   // Update Display always hase after drawing
   graphics_update();
@@ -938,7 +948,7 @@ void refresh_display(void)
 
 /*******************************************************************************
  ***************************   BUTTON HANDLER   ********************************
- ******************************************************************************/
+ *******************************************************************************/
 
 void button_event_handler(const button_event_t *evt)
 {

@@ -4,9 +4,6 @@
 #define BUFSIZE 80
 #endif
 
-// Input buffer
-//static char input_buffer[BUFSIZE];
-
 // Define init function
 void app_iostream_usart_init(void)
 {

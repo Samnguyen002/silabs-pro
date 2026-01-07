@@ -1,111 +1,229 @@
-# SoC - Empty
+# BLE Central - USART to BLE String Reception with Pairing
 
-The Bluetooth SoC-Empty example is a project that you can use as a template for any standalone Bluetooth application.
+A Bluetooth Low Energy central device that scans for a peripheral advertising a custom USART service, connects, performs Numeric Comparison pairing and bonding, enables Indication on the USART characteristic, receives fragmented strings from the peripheral, reassembles them, validates them with checksum, and outputs the complete payload to a computer via USART (Virtual COM).
 
-> Note: this example expects a specific Gecko Bootloader to be present on your device. For details see the Troubleshooting section.
+---
 
-## Getting Started
+## Overview
 
-To learn the Bluetooth technology basics, see [UG103.14: Bluetooth LE Fundamentals](https://www.silabs.com/documents/public/user-guides/ug103-14-fundamentals-ble.pdf).
+This project implements a BLE Central device with the following features:
 
-To get started with Silicon Labs Bluetooth and Simplicity Studio, see [QSG169: Bluetooth SDK v3.x Quick Start Guide](https://www.silabs.com/documents/public/quick-start-guides/qsg169-bluetooth-sdk-v3x-quick-start-guide.pdf).
+- **Scanning & Connection**: Scans for advertising devices that include the custom `gattdb_usart_service_0` UUID and connects when found
+- **Reliable Reception**: Receives packets (fragments) via **Indication** from a Peripheral and reassembles them into the original payload; the Central is a receiver and does not fragment outgoing data.
+- **USART Output**: Completed payloads are printed to the Virtual COM (VCOM) / USART for viewing on a connected PC
+- **Secure Pairing & Bonding**: Implements Numeric Comparison pairing (MITM protection) with user confirmation via push-buttons and optional LCD display
+- **Fragment Queueing**: Incoming fragments are queued to handle variations in indication timing
 
-The term SoC stands for "System on Chip", meaning that this is a standalone application that runs on the EFR32/BGM and does not require any external MCU or other active components to operate.
+## Table of Contents
 
-As the name implies, the example is an (almost) empty template that has only the bare minimum to make a working Bluetooth application. This skeleton can be extended with the application logic.
+- [Key Components](#key-components)
+- [Hardware for Demo](#hardware-for-demo)
+- [Software Requirements](#software-requirements)
+- [Project Structure](#project-structure)
+- [Defragment packet](#defragment-packet)
+- [Pairing & Security](#pairing--security)
+- [Usage](#usage)
+- [Troubleshooting](#troubleshooting)
+- [References](#references)
+- [License](#license)
 
-The development of a Bluetooth applications consist of three main steps:
+## Key Components
 
-* Designing the GATT database
-* Responding to the events raised by the Bluetooth stack
-* Implementing additional application logic
+The project is built with modular, reusable components:
 
-These steps are covered in the following sections. To learn more about programming an SoC application, see [UG434: Silicon Labs Bluetooth ® C Application Developer's Guide for SDK v3.x](https://www.silabs.com/documents/public/user-guides/ug434-bluetooth-c-soc-dev-guide-sdk-v3x.pdf).
+| Component | Purpose |
+|-----------|---------|
+| `app.c` | Main application logic: scanning, connection, service discovery/characteristic, enabling indications, security configuration, pairing state machine, GATT event handling and LCD display managemen|
+| `ble_defragment_rxdata.c/.h` | Defragmentation (reassembly) queue and logic; reassembles incoming fragments into complete payloads and performs checksum validation |
+| `app_iostream_usart.c/.h` | USART (VCOM) initialization, output, and checksum computation |
+| `app_button_service.c/h (Reusable)`| Generic button service framework with multiple button support and event callbacks |
+| `app_button_pairing_complete.c/.h` | Button-triggered pairing control, an application from app_button_service |
 
-## Designing the GATT Database
+---
 
-The SOC-empty example implements a basic GATT database. GATT definitions (services/characteristics) can be extended using the GATT Configurator, which can be found under Advanced Configurators in the Software Components tab of the Project Configurator. To open the Project Configurator, open the .slcp file of the project.
+## Hardware for Demo
 
-![Opening GATT Configurator](image/readme_img1.png)
+- **EFR32 SoC** (e.g., EFR32MG24)
+- **USB Interface** for USART0 (Virtual COM)
+- **Optional**: Push-buttons (BTN0 for Yes, BTN1 for No) for Numeric Comparison confirmation
+- **Optional**: Memory LCD for passkey display
 
-To learn how to use the GATT Configurator, see [UG438: GATT Configurator User’s Guide for Bluetooth SDK v3.x](https://www.silabs.com/documents/public/user-guides/ug438-gatt-configurator-users-guide-sdk-v3x.pdf).
+---
 
-## Responding to Bluetooth Events
+## Software Requirements
 
-A Bluetooth application is event driven. The Bluetooth stack generates events e.g., when a remote device connects or disconnects or when it writes a characteristic in the local GATT database. The application has to handle these events in the `sl_bt_on_event()` function. The prototype of this function is implemented in *app.c*. To handle more events, the switch-case statement of this function is to be extended. For the list of Bluetooth events, see the online [Bluetooth API Reference](https://docs.silabs.com/bluetooth/latest/).
+- Simplicity SDK **v2025.6.2** or later
+- Simplicity Studio v5 IDE
+- GCC ARM Embedded Toolchain (v12.2.1 or compatible)
 
-## Implementing Application Logic
+---
 
-Additional application logic has to be implemented in the `app_init()` and `app_process_action()` functions. Find the definitions of these functions in *app.c*. The `app_init()` function is called once when the device is booted, and `app_process_action()` is called repeatedly in a while(1) loop. For example, you can poll peripherals in this function. To save energy and to have this function called at specific intervals only, for example once every second, use the services of the [Sleeptimer](https://docs.silabs.com/gecko-platform/latest/service/api/group-sleeptimer). If you need a more sophisticated application, consider using RTOS (see [AN1260: Integrating v3.x Silicon Labs Bluetooth Applications with Real-Time Operating Systems](https://www.silabs.com/documents/public/application-notes/an1260-integrating-v3x-bluetooth-applications-with-rtos.pdf)).
+## Project Structure
 
-## Features Already Added to the SOC-Empty Application
+```
+central_devices/
+├── app.c                                 # Core application logic
+├── app.h                                 # Application interface
+├── app_iostream_usart.c/.h               # USART I/O and checksum
+├── ble_defragment_rxdata.c/.h            # Defragmentation and queue management
+├── app_button_pairing_complete.c/.h      # Pairing button handling
+├── log.h                                 # Logging macros
+├── main.c                                # Entry point
+├── config/btconf/
+│   └── gatt_configuration.btconf         # GATT database configuration
+├── autogen/
+│   ├── gatt_db.h/.c                      # Auto-generated GATT database
+│   └── [other SDK files]
+└── readme.md
+```
 
-The SOC-Empty application is ***almost*** empty. It implements a basic application to demonstrate how to handle events, how to use the GATT database, and how to add software components.
+---
 
-* A simple application is implemented in the event handler function that starts advertising on boot (and on connection_closed event). This makes it possible for remote devices to find the device and connect to it.
-* A simple GATT database is defined by adding Generic Access and Device Information services. This makes it possible for remote devices to read out some basic information such as the device name.
-* The OTA DFU software component is added, which extends both the event handlers (see *sl_ota_dfu.c*) and the GATT database (see *ota_dfu.xml*). This makes it possible to make Over-The-Air Device-Firmware-Upgrade without any additional application code.
+## Defragment packet
 
-## Testing the SOC-Empty Application
+**Note:** The Peripheral produces packets according to the protocol below. The Central's role is to receive these packets (fragments), queue them, reassemble them into the original payload, and validate integrity—Central does not perform fragmentation itself.
 
-As described above, an empty example does nothing except advertising and letting other devices connect and read its basic GATT database. To test this feature, do the following:
+### First fragment (starts the transmission)
+- Minimum length: 2 bytes (length byte + at least 1 payload byte). If shorter, Central logs "First fragment too short".
+- Byte 0 is the payload length (expected total payload length).
+- If the received fragment length equals 1 + expected_length + 1, the transmission is a single-fragment message (length + payload + checksum).
+- Otherwise, the first fragment contains length byte + up to 19 bytes of payload (first fragment payload length = len - 1).
 
-1. Build and flash the SoC-Empty example to your device.
-2. Make sure a bootloader is installed. See the Troubleshooting section.
-3. Download the **Simplicity Connect** smartphone app, available on [iOS](https://apps.apple.com/us/app/simplicity-connect/id1030932759) and [Android](https://play.google.com/store/apps/details?id=com.siliconlabs.bledemo&hl=en&gl=US).
-4. Open the app and choose the [Scan].
-   ![Simplicity Connect start scanning](image/readme_img2.png)
-5. Now you should find your device advertising as "Empty Example". Tap **Connect**.
-   ![Scan results](image/readme_img3.png)
-6. The connection is opened, and the GATT database is automatically discovered. Find the device name characteristic under Generic Access service and try to read out the device name.
-   ![GATT database of the device](image/readme_img4.png)
+### Subsequent fragments
+- Middle fragments carry up to 20 bytes of payload each.
+- The final fragment carries the remaining payload (which must match the remaining length) followed by a checksum byte.
+- If the final fragment's payload length does not match the remaining expected payload, Central logs "Last fragment size mismatch".
+- If a middle fragment is larger than the remaining expected payload, Central logs "Middle fragment too larger".
+
+### Processing & Validation
+- Fragments are pushed into a ring queue by the Central (`defrag_push_data`). The Central pops and processes queued fragments (`defrag_process_fragment`) in sequence.
+- The Central reassembles fragments into an internal buffer up to `DEFRAG_MAX_PAYLOAD` (see `ble_defragment_rxdata.h`).
+- When all payload bytes are collected, the Central reads the checksum byte from the last fragment and validates it using the two's complement of the sum of payload bytes (computed by `app_iostream_checksum()`).
+- If checksum matches, the payload is marked valid and can be retrieved via `defrag_get_payload()` (returns payload pointer, length and checksum validity flag). If checksum fails, Central logs a checksum error.
+
+### Error conditions logged by the Central
+- `First fragment too short`
+- `Invalid length` (payload length 0 or greater than allowed maximum)
+- `QUEUE is FULL` / `QUEUE is EMPTY`
+- `Empty fragment`
+- `Last fragment size mismatch`
+- `Middle fragment too larger`
+- `Checksum error`
+
+This section mirrors the behavior implemented in `ble_defragment_rxdata.c/.h` and describes the exact packet handling expected by the Central.
+
+---
+
+## Pairing & Security
+
+### Role
+- Initiator (increase sercurity) 
+
+### Security Configuration
+- **Method**: Numeric Comparison (MITM Protection enabled)
+- **I/O Capability**: DISPLAYYESNO (device displays passkey and expects Yes/No confirmation)
+- **Authentication**: LE Secure Connections with bonding enabled
+- **Bonding**: Long-term keys stored to allow automatic secure reconnection
+- **Passkey**: 
+  - **Numeric Comparision**: Random passkey 6-digit for each pairing process
+  - **PassEntry**: Fixed passkey derived from Bluetooth device address (6 bytes)Formula: Uses device MAC address bytes to generate a consistent 6-digit passkey
+
+### Pairing Flow
+1. **Boot**: Central scans for peripherals advertising `usart_service`.
+2. **Open connection**: Central opens connection when target is found.
+3. **Dicover service/charac**: Based on data type we want, find it into one of adv packets that matchs our data type
+4. **Pairing**: Central initiates/enforces security (`sl_bt_sm_increase_security`) and handles pairing events:
+   - `sl_bt_evt_sm_passkey_display` shows the passkey on the Central (LCD or logs)
+   - `sl_bt_evt_sm_confirm_passkey` prompts the user to confirm
+   - User confirms with BTN0 (Yes) or rejects with BTN1 (No)
+5. **Bonding**: On success (`sl_bt_evt_sm_bonded`), Central discovers the remote `usart_service` and enables indications
+
+## Optional UI
+- **Memory LCD (LS013B7DH03)**: Displays passkey during Numeric Comparison pairing
+- **Pushbuttons (BTN0, BTN1)**: 
+  - BTN0 = **Confirm** (Yes) pairing
+  - BTN1 = **Reject** (No) pairing
+
+---
+
+## Usage
+
+### 1. Build and Flash
+
+```bash
+# Build the project (from Simplicity Studio or CLI)
+cd <project_path>/GNU ARM v12.2.1 - Default/
+make all
+
+# Flash to device (adjust COM port as needed)
+commander <project_path>/GNU ARM v12.2.1 - Default/central_devices.s37
+```
+
+### 2. Pair with Peripheral
+
+- Start scanning on Central. When a Peripheral advertising the `usart_service` appears, Central will connect and initiate pairing.
+- Confirm Numeric Comparison passkey using pushbuttons or the LCD when prompted.
+
+### 3. Receive Strings
+
+When the Peripheral sends strings (fragmented according to the protocol above) the Central will log and output reassembled payloads on VCOM:
+
+```
+->Payload Ready:
+->Length: 11 bytes
+->Data: "Hello World"
+```
+
+For multicontent transmissions, logs will show fragment processing and checksum validation messages, for example:
+
+```
+[FRAGMENT 1] Data: This is a very lon, len: 19
+[MID FRAGMENT] Data: g string that excee, len: 20
+[LAST FRAGMENT] Data: ds the single fragmen, len: 12
+[CHECKSUM] payload NOT LOST , in subsequent fragment
+[TOTAL FRAGMENT] Data: This is a very long string that exceeds the single fragment limit, len: 66
+->Payload Ready:
+->Length: 66 bytes
+->Data: "This is a very long string that exceeds the single fragment limit"
+```
+
+---
 
 ## Troubleshooting
 
-### Bootloader Issues
+### Issue: Central does not find Peripheral
+- Verify that the Peripheral advertises the custom `usart_service` UUID (AD types 0x06 or 0x07)
+- Check that the Peripheral is advertising as connectable
 
-Note that Example Projects do not include a bootloader. However, Bluetooth-based Example Projects expect a bootloader to be present on the device in order to support device firmware upgrade (DFU). To get your application to work, you should either
-- flash the proper bootloader or
-- remove the DFU functionality from the project.
+### Issue: No VCOM Output
+- Ensure Virtual COM instance (sl_iostream_vcom) and `retarget-stdio` are enabled in software components
+- Verify host machine COM port settings (baud = 115200)
 
-**If you do not wish to add a bootloader**, then remove the DFU functionality by uninstalling the *Bootloader Application Interface* software component -- and all of its dependants. This will automatically put your application code to the start address of the flash, which means that a bootloader is no longer needed, but also that you will not be able to upgrade your firmware.
+### Issue: Checksum or Defragmentation Errors
+- Confirm the Peripheral follows the exact framing rules (length byte, payload fragments, final checksum byte)
+- Check logs for `>Middle fragment too larger`, `>Last fragment size mismatch` or `Checksum error` to debug fragment boundaries
 
-**If you want to add a bootloader**, then either
-- Create a bootloader project, build it and flash it to your device. Note that different projects expect different bootloaders:
-  - for NCP and RCP projects create a *BGAPI UART DFU* type bootloader
-  - for SoC projects on Series 2 devices create a *Bluetooth Apploader OTA DFU* type bootloader
+### Issue: Pairing Fails
+- Make sure passkeys displayed on both devices match
+- Confirm user input via buttons (BTN0 = Yes / BTN1 = No) if using Numeric Comparison
+- Clear old bonds (`sl_bt_sm_delete_bondings()`) and retry pairing
 
-- or run a precompiled Demo on your device from the Launcher view before flashing your application. Precompiled demos flash both bootloader and application images to the device. Flashing your own application image after the demo will overwrite the demo application but leave the bootloader in place.
-  - For NCP and RCP projects, flash the *Bluetooth - NCP* demo.
-  - For SoC projects, flash the *Bluetooth - SoC Thermometer* demo.
+---
 
-**Important Notes:**
-- when you flash your application image to the device, use the *.hex* or *.s37* output file. Flashing *.bin* files may overwrite (erase) the bootloader.
+## References
 
-- On Series 2 devices SoC example projects require a *Bluetooth Apploader OTA DFU* type bootloader by default. This bootloader needs a lot of flash space and does not fit into the regular bootloader area, hence the application start address must be shifted. This shift is automatically done by the *Apploader Support for Applications* software component, which is installed by default. If you want to use any other bootloader type, you should remove this software component in order to shift the application start address back to the end of the regular bootloader area. Note, that in this case you cannot do OTA DFU with Apploader, but you can still implement application-level OTA DFU by installing the *Application OTA DFU* software component instead of *In-place OTA DFU*.
+- [UG103.14: Bluetooth LE Fundamentals](https://www.silabs.com/documents/public/user-guides/ug103-14-fundamentals-ble.pdf)
+- [QSG169: Bluetooth SDK v3.x Quick Start Guide](https://www.silabs.com/documents/public/quick-start-guides/qsg169-bluetooth-sdk-v3x-quick-start-guide.pdf)
+- [UG434: Silicon Labs Bluetooth C SoC Developer's Guide](https://www.silabs.com/documents/public/user-guides/ug434-bluetooth-c-soc-dev-guide-sdk-v3x.pdf)
+- [UG438: GATT Configurator User's Guide](https://www.silabs.com/documents/public/user-guides/ug438-gatt-configurator-users-guide-sdk-v3x.pdf)
+- [Bluetooth API Reference](https://docs.silabs.com/bluetooth/latest/)
 
-For more information on bootloaders, see [UG103.6: Bootloader Fundamentals](https://www.silabs.com/documents/public/user-guides/ug103-06-fundamentals-bootloading.pdf) and [UG489: Silicon Labs Gecko Bootloader User's Guide for GSDK 4.0 and Higher](https://cn.silabs.com/documents/public/user-guides/ug489-gecko-bootloader-user-guide-gsdk-4.pdf).
+---
 
+## License
 
-### Programming the Radio Board
+Copyright 2025 Silicon Laboratories Inc. www.silabs.com
 
-Before programming the radio board mounted on the mainboard, make sure the power supply switch is in the AEM position (right side) as shown below.
+SPDX-License-Identifier: Zlib
 
-![Radio board power supply switch](image/readme_img0.png)
-
-
-## Resources
-
-[Bluetooth Documentation](https://docs.silabs.com/bluetooth/latest/)
-
-[UG103.14: Bluetooth LE Fundamentals](https://www.silabs.com/documents/public/user-guides/ug103-14-fundamentals-ble.pdf)
-
-[QSG169: Bluetooth SDK v3.x Quick Start Guide](https://www.silabs.com/documents/public/quick-start-guides/qsg169-bluetooth-sdk-v3x-quick-start-guide.pdf)
-
-[UG434: Silicon Labs Bluetooth ® C Application Developer's Guide for SDK v3.x](https://www.silabs.com/documents/public/user-guides/ug434-bluetooth-c-soc-dev-guide-sdk-v3x.pdf)
-
-[Bluetooth Training](https://www.silabs.com/support/training/bluetooth)
-
-## Report Bugs & Get Support
-
-You are always encouraged and welcome to report any issues you found to us via [Silicon Labs Community](https://www.silabs.com/community).
+This software is provided 'as-is', without any express or implied warranty.

@@ -9,10 +9,6 @@
 #include "sl_sleeptimer.h"
 #include "app_assert.h"
 
-#ifdef SL_COMPONENT_CATALOG_PRESENT
-#include "sl_component_catalog.h"
-#endif
-
 // Button service initialization flag
 static bool service_initialized = false;
 
@@ -38,8 +34,8 @@ static const sl_button_t *button_instances[BUTTON_SERVICE_MAX_BUTTONS] = {
 };
 
 /*******************************************************************************
- ********************   LOCAL FUNCTIONS   **************************************
- ******************************************************************************/
+ ***************************   LOCAL FUNCTIONS   *******************************
+ *******************************************************************************/
 
 static button_id_t get_button_id_from_handle(const sl_button_t *handle)
 {
@@ -58,8 +54,8 @@ static button_id_t get_button_id_from_handle(const sl_button_t *handle)
 }
 
 /*******************************************************************************
- ********************   GLOBAL FUNCTIONS   *************************************
- ******************************************************************************/
+ ***************************   GLOBAL FUNCTIONS   ******************************
+ *******************************************************************************/
 
 // Initialize the button service
 sl_status_t button_service_init(void)
@@ -194,8 +190,8 @@ sl_status_t button_service_reset(void)
 }
 
 /*******************************************************************************
- ********************   BUTTON CALLBACK HANDLERS   *****************************
- ******************************************************************************/
+ ***********************   BUTTON CALLBACK HANDLERS   **************************
+ *******************************************************************************/
 
 void sl_button_on_change(const sl_button_t *handle)
 {

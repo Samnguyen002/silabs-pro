@@ -1,5 +1,6 @@
 #include "ble_defragment_rxdata.h"
 #include "app_iostream_usart.h"
+#include "log.h"
 
 // Define a node of the queue
 typedef struct 
@@ -25,9 +26,9 @@ static defrag_context_t defrag_cxt = {0};
 static volatile uint8_t q_head = 0;         // head: index to write
 static volatile uint8_t q_tail = 0;         // tail: index to read
 
-/*************************
- **** LOCAL FUCNTIONS ****
- *************************/
+/*******************************************************************************
+ ***************************   LOCAL FUNCTIONS   *******************************
+ *******************************************************************************/
 
 // Return the next index of queue (ring buffer)
 static uint8_t next_queue_index(uint8_t i)
@@ -39,26 +40,26 @@ static defrag_enum_t process_first_fragment(uint8_t *data, uint16_t len)
 {
     if(len < 2)
     {
-        printf(">First fragment too short\r\n");
+        LOG_INFO("ERROR: First fragment too short");
         return DEFRAG_ERROR;
     }
 
     // First byte is the payload length
     defrag_cxt.expected_len = data[0];
 
-    printf("-----Defragmentation Started-----\r\n");
-    printf(">Expected length: %d byte\r\n", (int)defrag_cxt.expected_len);
+    LOG_INFO("-----Defragmentation Started-----");
+    LOG_INFO("Expected length: %u byte", defrag_cxt.expected_len);
 
     if(defrag_cxt.expected_len == 0 || defrag_cxt.expected_len > DEFRAG_MAX_PAYLOAD)
     {
-        printf(">Invalid length\r\n");
+        LOG_INFO("ERROR: Invalid length");
         return DEFRAG_ERROR;
     }
 
     // Check length if it's a single fragment
     if(len == 1 + defrag_cxt.expected_len + 1)
     {
-        printf("SINGLE FRAGMENT\r\n");
+        LOG_INFO("SINGLE FRAGMENT");
         memcpy(defrag_cxt.complete_buffer, &data[1], defrag_cxt.expected_len);
         defrag_cxt.received_len = defrag_cxt.expected_len;
         defrag_cxt.received_checksum = data[len - 1];
@@ -67,22 +68,22 @@ static defrag_enum_t process_first_fragment(uint8_t *data, uint16_t len)
         uint8_t temporary_checksum = app_iostream_checksum(defrag_cxt.complete_buffer, 
                                                            defrag_cxt.expected_len);
 
-        printf("received checksum: %02x and cal_checksum: %02x\r\n", 
+        LOG_INFO("received checksum: %02x and cal_checksum: %02x", 
                     defrag_cxt.received_checksum, 
                     temporary_checksum);
         if(temporary_checksum == defrag_cxt.received_checksum)
         {
-            printf("[CHECKSUM] payload not LOST\r\n");
+            LOG_INFO("CHECKSUM: Payload not LOST");
             defrag_cxt.checksum_valid = true;
         }
         else
         {
-            printf("[CHECKSUM] payload LOST\r\n");
+            LOG_INFO("CHECKSUM: Payload LOST");
         }
 
         defrag_cxt.complete_buffer[defrag_cxt.expected_len] = '\0'; 
-        printf("[RECEIVED] Data: %s, len %d\r\n", (char *)defrag_cxt.complete_buffer, 
-                                              (int)(defrag_cxt.expected_len));
+        LOG_INFO("RECEIVED: Data: %s, len %u", (char *)defrag_cxt.complete_buffer, 
+                                                defrag_cxt.expected_len);
         defrag_cxt.is_complete = true;
         return DEFRAG_COMPLETE;
     }
@@ -94,8 +95,8 @@ static defrag_enum_t process_first_fragment(uint8_t *data, uint16_t len)
     defrag_cxt.is_first_fragment = false;
 
     defrag_cxt.complete_buffer[first_payload_len] = '\0'; 
-    printf("[FRAGMENT 1] Data: %s, len: %d\r\n", (char *)defrag_cxt.complete_buffer, 
-                                             (int)first_payload_len);
+    LOG_INFO("[FRAGMENT 1] Data: %s, len: %u", (char *)defrag_cxt.complete_buffer, 
+                                                first_payload_len);
     
     return DEFRAG_CONTINUE;
 }
@@ -107,12 +108,12 @@ static defrag_enum_t process_subsequent_fragment(uint8_t *data, uint16_t len)
     // Dealed with the first fragment
     if(len == 0)
     {
-        printf(">Empty fragment\r\n");
+        LOG_INFO("ERROR: Empty fragment");
         return DEFRAG_ERROR;
     }
 
     uint16_t remaining = defrag_cxt.expected_len - defrag_cxt.received_len;
-    printf(" remaining len: %d and fragment_len: %d\r\n", (int)remaining,(int)len);
+    LOG_INFO(" Remaining len: %u and fragment_len: %u", remaining, len);
 
     // Check if last fragment: [remaining/checksum]
     if(remaining + 1 <= 20)
@@ -122,7 +123,7 @@ static defrag_enum_t process_subsequent_fragment(uint8_t *data, uint16_t len)
 
         if(payload_len != remaining)
         {
-            printf(">Last fragment size mismatch\r\n");
+            LOG_INFO("ERROR: Last fragment size mismatch");
             return DEFRAG_ERROR;
         }
 
@@ -136,22 +137,22 @@ static defrag_enum_t process_subsequent_fragment(uint8_t *data, uint16_t len)
                                                    defrag_cxt.expected_len);
         if(temporary_checksum == defrag_cxt.received_checksum)
         {
-            printf("[CHECKSUM] payload NOT LOST , in subsequent fragment\r\n");
+            LOG_INFO("CHECKSUM: Payload NOT LOST , in subsequent fragment");
             defrag_cxt.checksum_valid = true;
         }
         else
         {
-            printf("[CHECKSUM] payload LOST, in subsequent fragment\r\n ");
+            LOG_INFO("CHECKSUM: Payload LOST, in subsequent fragment");
         }
 
         memcpy(buffer, data, payload_len);
         buffer[payload_len] = '\0';
-        printf("[LAST FRAGMENT] Data: %s, len: %d\r\n", (char *)buffer, 
-                                                        (int)payload_len);
+        LOG_INFO("[LAST FRAGMENT] Data: %s, len: %u", (char *)buffer, 
+                                                       payload_len);
 
         defrag_cxt.complete_buffer[defrag_cxt.received_len] = '\0';                                            
-        printf("[TOTAL FRAGMENT] Data: %s, len: %d\r\n", (char *)defrag_cxt.complete_buffer, 
-                                                         (int)defrag_cxt.received_len);
+        LOG_INFO("[TOTAL FRAGMENT] Data: %s, len: %u", (char *)defrag_cxt.complete_buffer, 
+                                                         defrag_cxt.received_len);
 
         defrag_cxt.is_complete = true;
         return DEFRAG_COMPLETE;
@@ -161,7 +162,7 @@ static defrag_enum_t process_subsequent_fragment(uint8_t *data, uint16_t len)
         // Middle fragment: [payload_20_bytes]
         if(len > remaining)
         {
-            printf("> Middle fragment too larger\r\n");
+            LOG_INFO("Middle fragment too larger\r\n");
             return DEFRAG_ERROR;
         }
 
@@ -170,25 +171,25 @@ static defrag_enum_t process_subsequent_fragment(uint8_t *data, uint16_t len)
 
         memcpy(buffer, data, len);
         buffer[len] = '\0';
-        printf("[MID FRAGMENT] Data: %s, len: %d\r\n", (char *)buffer, 
-                                                       (int)len);
+        LOG_INFO("[MID FRAGMENT] Data: %s, len: %u", (char *)buffer, 
+                                                      len);
         
         defrag_cxt.complete_buffer[defrag_cxt.received_len] = '\0';                                            
-        printf("[CUR FRAGMENT] Data: %s, len: %d\r\n", (char *)defrag_cxt.complete_buffer, 
-                                                       (int)defrag_cxt.received_len);     
+        LOG_INFO("[CUR FRAGMENT] Data: %s, len: %u", (char *)defrag_cxt.complete_buffer, 
+                                                      defrag_cxt.received_len);     
         
         return DEFRAG_CONTINUE;
     }
 }
 
-/*************************
- **** GLOBAL FUCNTIONS ***
- *************************/
+/*******************************************************************************
+ ***************************   GLOBAL FUNCTIONS   ******************************
+ ******************************************************************************/
 
 void queue_init(void)
 {
     memset(queue, 0, sizeof(queue));
-    printf("[INIT] Initialize queue\r\n");
+    LOG_INFO("Initialize queue");
 }
 
 void defrag_init(void)
@@ -196,7 +197,7 @@ void defrag_init(void)
     memset(&defrag_cxt, 0, sizeof(defrag_context_t));
     defrag_cxt.is_first_fragment = true;
     defrag_cxt.is_complete = false;
-    printf("[INIT] Initialize context\r\n");
+    LOG_INFO("Initialize context");
 }
 
 void defrag_reset(void)
@@ -204,7 +205,7 @@ void defrag_reset(void)
     memset(&defrag_cxt, 0, sizeof(defrag_context_t));
     defrag_cxt.is_first_fragment = true;
     defrag_cxt.is_complete = false;
-    printf("[RESET] Initialize context\r\n");
+    LOG_INFO("[RESET] Initialize context");
 }
 
 
@@ -212,21 +213,21 @@ bool defrag_push_data(const uint8_t *data, uint16_t len)
 {
     if(data == NULL || len == 0 || len > QUEUE_SLOT_SIZE)
     {
-        printf(">FAILED to push data #1");
+        LOG_INFO("ERROR: Failed to push data #1");
         return false;
     }
 
     uint8_t next_idx = next_queue_index(q_head);
     if(next_idx == q_tail)
     {
-        printf(">QUEUE is FULL\r\n");
+        LOG_INFO("ERROR: QUEUE is FULL\r\n");
         return false;
     }
 
     memcpy(queue[q_head].data, data, len);
     queue[q_head].len = len;
 
-    printf("[PUSH] data: ");
+    LOG_INFO("PUSH data: ");
     for (int i = 0; i < len; i++)
         printf("%02x", queue[q_head].data[i]);
     printf(", len: %d\r\n", queue[q_head].len);
@@ -249,7 +250,7 @@ defrag_enum_t defrag_process_fragment(void)
     uint16_t len = queue[q_tail].len;
     uint8_t *data = queue[q_tail].data;
 
-    printf("[POP] data: ");
+    LOG_INFO("POP data: ");
     for (int i = 0; i < len; i++)
         printf("%02x", queue[q_tail].data[i]);
     printf(", len: %d\r\n", queue[q_tail].len);
@@ -258,7 +259,7 @@ defrag_enum_t defrag_process_fragment(void)
 
     if(data == NULL || len == 0)
     {
-         printf(">Invalid fragment\r\n");
+         LOG_INFO("ERROR: Invalid fragment");
         return DEFRAG_ERROR;
     }
 

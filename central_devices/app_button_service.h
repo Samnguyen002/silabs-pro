@@ -46,9 +46,9 @@ typedef enum
 // Button event types, 
 typedef enum
 {
-    BUTTON_EVENT_PRESSED,   //< Button was pressed
-    BUTTON_EVENT_RELEASED,  //< Button was released
-    BUTTON_EVENT_HELD       //< Button held for long duration (optional)
+    BUTTON_EVENT_PRESSED,   // Button was pressed
+    BUTTON_EVENT_RELEASED,  // Button was released
+    BUTTON_EVENT_HELD       // Button held for long duration (optional)
 }button_event_type_t;
 
 // Button service operating mode (for specific application)
@@ -57,7 +57,7 @@ typedef enum
     BUTTON_MODE_DISABLE = 0,
     BUTTON_MODE_NORMAL,
     BUTTON_MODE_PAIRING,    
-    BUTTON_MODE_CUSTOM_     //< Represent for specific application
+    BUTTON_MODE_CUSTOM_     // Represent for specific application
 }button_mode_t;
 
 /*******************************************************************************
