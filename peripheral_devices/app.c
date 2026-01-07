@@ -163,7 +163,7 @@ void app_init(void)
   app_button_pairing_init(button_event_handler);
 
   count = get_burtc_count();
-  LOG_INFO("BURTC Count: %lu", (unsigned long)count);
+  LOG_INFO("BURTC Count: %lu", count);
 
   time = convert_count_to_seconds(count, 32768);
   LOG_INFO("Elapsed time (seconds): %lu", time);
@@ -198,7 +198,7 @@ void app_process_action(void)
     {
       buffer[--len] = '\0';
     }
-    LOG_INFO("\r\nReceived: %lu bytes: %s", len, (char *)buffer);
+    LOG_INFO("Received: %u bytes: %s", len, (char *)buffer);
 
     sc = send_usart_packet_over_ble((uint8_t *)buffer, len);
     if(sc == SL_STATUS_OK)
@@ -613,7 +613,7 @@ size_t read_line_from_iostream(sl_iostream_t *handle, uint8_t *out_buf, size_t m
         if (st == SL_STATUS_OK && bytes_read > 0) 
         {
             // Copy to output buffer
-            LOG_INFO("bytes_read: %lu", bytes_read);
+            LOG_INFO("bytes_read: %u", bytes_read);
             size_t copy = bytes_read;
             if (total + copy > (max_len - 1)) 
             {
