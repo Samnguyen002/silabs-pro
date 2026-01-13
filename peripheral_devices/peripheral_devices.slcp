@@ -28,6 +28,7 @@ toolchain_settings: []
 component:
 - {id: EFR32MG24B220F1536IM48}
 - {id: app_assert}
+- {id: app_log}
 - {id: app_os_helper}
 - {id: bluetooth_feature_connection_role_central}
 - {id: bluetooth_feature_connection_role_peripheral}
@@ -40,6 +41,7 @@ component:
 - {id: bluetooth_stack}
 - {id: brd4001a}
 - {id: brd4187c}
+- {id: cbap}
 - {id: clock_manager}
 - {id: device_init}
 - {id: dmd_memlcd}
@@ -68,7 +70,7 @@ configuration:
 - {name: SL_STACK_SIZE, value: '2752'}
 - condition: [psa_crypto]
   name: SL_PSA_KEY_USER_SLOT_COUNT
-  value: '0'
+  value: '5'
 ui_hints:
   highlight:
   - {path: config/btconf/gatt_configuration.btconf}

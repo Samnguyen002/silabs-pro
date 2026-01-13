@@ -26,8 +26,11 @@ extern const sli_bt_gattdb_t gattdb;
 #define gattdb_current_time                   31
 #define gattdb_local_time_information         34
 #define gattdb_reference_time_information     36
-#define gattdb_ota                            37
-#define gattdb_ota_control                    39
+#define gattdb_central_cert                   39
+#define gattdb_peripheral_cert                41
+#define gattdb_initiator_passkey              44
+#define gattdb_ota                            46
+#define gattdb_ota_control                    48
 
 #define gattdb_generic_attribute_len          2
 #define gattdb_service_changed_char_len       4

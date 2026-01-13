@@ -109,19 +109,51 @@ typedef enum
   BOND_FAILURE
 } pair_state_t;
 
-typedef struct {
-  uint8_t  connection_handle;
-  int8_t   rssi;
-  bool     power_control_active;
-  int8_t   tx_power;
-  int8_t   remote_tx_power;
-  uint8_t  server_address[6];
-  uint32_t usart_service_handle;
-  uint16_t usartpacket_characteristic_handle;
-} conn_properties_t;
+// -----------------------------------------------------------------------------
+// GATT
+
+// Reference to the CBAP service.
+static uint32_t cbap_service_handle = HANDLE_NOT_INITIALIZED;
+static const uint8_t cbap_service_uuid[] = { CBAP_SERVICE_UUID };
+
+// Reference to the CBAP characteristics.
+static characteristic_128_ref_t cbap_characteristics[] = {
+  {
+    .handle = HANDLE_NOT_INITIALIZED,
+    .uuid = { CENTRAL_CERT_CHAR_UUID }
+  },
+  {
+    .handle = HANDLE_NOT_INITIALIZED,
+    .uuid = { PERIPHERAL_CERT_CHAR_UUID }
+  },
+  {
+    .handle = HANDLE_NOT_INITIALIZED,
+    .uuid = { CENTRAL_OOB_CHAR_UUID }
+  },
+  {
+    .handle = HANDLE_NOT_INITIALIZED,
+    .uuid = { PERIPHERAL_OOB_CHAR_UUID }
+  }
+};
+
+// My custom service UUID in gattdb (server)
+// I need AD type 0x07 -> complete list of custom services (128bits)
+// 8935c600-3a0e-4388-92ed-8f6de23f3f5a -> convert Little endian: 5a3f3fe26d8fed9288430e3a00c63589
+static const uint8_t current_time_service[2] = { 0x05, 0x18 };
+static const uint8_t name_service[2] = { 0x00, 0x18 };
+static const uint8_t name_characteristic[2] = { 0x00, 0x2A };
+static const uint8_t usart_service[16] = { 0x40, 0x30, 0x57, 0x13, 0x72, 0xd9, 0x62, 0x83, 
+                                           0xdf, 0x4c, 0xb8, 0x80, 0xd9, 0x81, 0x7d, 0x46 };
+static const uint8_t usart_char[16] = { 0xfa, 0x3d, 0x74, 0x7c, 0x09, 0xd3, 0xdf, 0xb1, 
+                                        0x07, 0x41, 0xd4, 0xa2, 0xa5, 0x79, 0xba, 0x17 };
+
+// -----------------------------------------------------------------------------
 
 // Array for holding properties of multiple (parallel) connections
-conn_properties_t conn_properties[SL_BT_CONFIG_MAX_CONNECTIONS];
+static conn_properties_t conn_properties[SL_BT_CONFIG_MAX_CONNECTIONS];
+
+// Array for holding properties of the trusted connections
+static conconn_properties_t trusted_devices[SL_BT_CONFIG_MAX_CONNECTIONS];
 
 // Counter of active connections
 static uint8_t active_connections_num;
@@ -141,17 +173,6 @@ static char passkey_display_string[] = "00000000000000";
 static uint32_t xOffset, yOffset;
 static GLIB_Context_t glibContext;
 static volatile uint32_t passkey = 0;
-
-// My custom service UUID in gattdb (server)
-// I need AD type 0x07 -> complete list of custom services (128bits)
-// 8935c600-3a0e-4388-92ed-8f6de23f3f5a -> convert Little endian: 5a3f3fe26d8fed9288430e3a00c63589
-static const uint8_t current_time_service[2] = { 0x05, 0x18 };
-static const uint8_t name_service[2] = { 0x00, 0x18 };
-static const uint8_t name_characteristic[2] = { 0x00, 0x2A };
-static const uint8_t usart_service[16] = { 0x40, 0x30, 0x57, 0x13, 0x72, 0xd9, 0x62, 0x83, 
-                                           0xdf, 0x4c, 0xb8, 0x80, 0xd9, 0x81, 0x7d, 0x46 };
-static const uint8_t usart_char[16] = { 0xfa, 0x3d, 0x74, 0x7c, 0x09, 0xd3, 0xdf, 0xb1, 
-                                        0x07, 0x41, 0xd4, 0xa2, 0xa5, 0x79, 0xba, 0x17 };
 
 // Init properties
 static void init_properties(void);

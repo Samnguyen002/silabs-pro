@@ -40,6 +40,7 @@ component:
 - {id: bluetooth_stack}
 - {id: brd4001a}
 - {id: brd4187c}
+- {id: cbap}
 - {id: clock_manager}
 - {id: device_init}
 - {id: dmd_memlcd}

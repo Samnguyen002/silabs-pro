@@ -34,6 +34,7 @@
 #include "gatt_db.h"
 #include "app.h"
 #include "sl_sleeptimer.h"
+#include "sl_bt_cbap.h"
 
 #include "burtc.h"
 #include "app_iostream_usart.h"
@@ -88,14 +89,7 @@ typedef enum
   PROMPT_CONFIRM_PASSKEY,
   BOND_SUCCESS,
   BOND_FAILURE
-}pair_state_t;
-
-typedef enum
-{
-  INDICATION_DISABLE,
-  INDICATION_ENABLE,
-  INDICATION_CONFIRM
-}ind_state_t;
+} pair_state_t;
 
 // [DISPLAY] Default strings and context used to show role/passkey on the LCD display
 static char role_display_string[] = "   RESPONDER   ";
@@ -114,8 +108,24 @@ uint8_t adv_payload[] = {
 };
 
 // The advertising set handle allocated from Bluetooth stack.
-static uint8_t advertising_set_handle = 0xff;
-static uint8_t connection_handle = 0xff;
+static uint8_t advertising_set_handle = SL_BT_INVALID_ADVERTISING_SET_HANDLE;
+static uint8_t connection_handle = SL_BT_INVALID_CONNECTION_HANDLE;
+
+// -----------------------------------------------------------------------------
+// Certificates
+
+// Device certificate in DER format
+static uint8_t device_certificate_der[CHAIN_LINK_DATA_LEN * CHAIN_LINK_DATA_NUM] = { 0 };
+static uint32_t device_certificate_der_len = 0;
+static uint32_t dev_cert_sending_progression = 0;
+static bool device_cert_sent = false;
+
+// Remote certificate which was sent over GATT in DER format
+static uint8_t remote_certificate_der[CHAIN_LINK_DATA_LEN * CHAIN_LINK_DATA_NUM] = { 0 };
+static uint32_t remote_certificate_der_len = 0;
+static bool remote_cert_arrived = false;
+static bool remote_cert_verified = false;
+// -----------------------------------------------------------------------------
 
 // Variables to hold BURTC count and converted time in seconds.
 static uint32_t count;
@@ -125,7 +135,6 @@ static uint32_t time;
 sl_sleeptimer_timer_handle_t timer_handle;
 volatile bool advertising = false;
 volatile bool notification = false;
-static ind_state_t ind_state = INDICATION_DISABLE;
 
 // Periodic timer callback
 static void timer_handler(sl_sleeptimer_timer_handle_t *handle, void *data);
@@ -162,11 +171,10 @@ void app_init(void)
   graphics_init();
   app_button_pairing_init(button_event_handler);
 
-  count = get_burtc_count();
-  LOG_INFO("BURTC Count: %lu", count);
-
-  time = convert_count_to_seconds(count, 32768);
-  LOG_INFO("Elapsed time (seconds): %lu", time);
+  // Initialize CBAP component to enable certificate processing 
+  sl_status_t sc = sl_bt_cbap_init(device_certificate_der, &device_certificate_der_len);
+  app_assert_status(sc);
+  LOG_BOOT("CBAP initialized. Device certificate verified");
 }
 
 // Application Process Action.
@@ -324,6 +332,12 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       connection_handle = evt->data.evt_connection_opened.connection;
       LOG_CONN("Connected to central device %02x\r\n", connection_handle);
 
+      // Clear any previous certificate state 
+      memset(remote_certificate_der, 0, sizeof(remote_certificate_der));
+      remote_certificate_der_len = 0;
+      remote_cert_arrived = false;
+      remote_cert_verified = false;
+
       // // Enable encryption on an unencrypted device
       // sc = sl_bt_sm_increase_security(connection_handle);
       // app_assert_status(sc);
@@ -356,10 +370,220 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       app_assert_status(sc);
       LOG_CONN("Restart advertising");
       
+      // Clear certificate state
+      memset(remote_certificate_der, 0, sizeof(remote_certificate_der));
+      remote_certificate_der_len = 0;
+      remote_cert_arrived = false;
+      remote_cert_verified = false;
+
       connection_handle = 0xFF;
-      ind_state = INDICATION_DISABLE;
       advertising = true;
       state = IDLE;
+      break;
+
+    // -------------------------------
+    // This event indicates that the value of an attribute in the local GATT
+    // database was changed by a remote GATT client.
+    case sl_bt_evt_gatt_server_attribute_value_id:
+      if(gattdb_usart_packet == evt->data.evt_gatt_server_attribute_value.attribute)
+      {
+        uint8_t data_recv[20];
+        size_t data_recv_len;
+
+        // Read characteristic value
+        memset(data_recv, 0, sizeof(data_recv)-1);
+        sc = sl_bt_gatt_server_read_attribute_value(gattdb_usart_packet,
+                                                    0,
+                                                    20,
+                                                    &data_recv_len,
+                                                    data_recv);
+        (void)data_recv_len;   
+        app_assert_status(sc);
+        if (sc != SL_STATUS_OK) 
+        {
+          LOG_CONN("ERROR: Client wrote error");
+          break;
+        }
+
+        data_recv[data_recv_len] = '\0'; 
+        LOG_CONN("Written value by client: %s",data_recv);
+        // LOG_INFO("Last byte: %c", data_recv[data_recv_len-1]);
+      }
+      break;
+
+    // -------------------------------
+    // Indicates that a remote GATT client is attempting to write a value of an attribute into the local GATT database
+    // Handle user write requests (certificate chunks)
+    case sl_bt_evt_gatt_server_user_write_request_id:
+      if (evt->data.evt_gatt_server_user_write_request.connection != connection_handle) 
+      {
+        break;
+      }
+      // Receiving Certificate from central device
+      if (evt->data.evt_gatt_server_user_write_request.characteristic == gattdb_central_cert) 
+      {
+        if (remote_cert_arrived == false) 
+        {
+          // First byte indicates that it is a last packet or not
+          memcpy(&remote_certificate_der[remote_certificate_der_len],
+                 &evt->data.evt_gatt_server_user_write_request.value.data[1],
+                 evt->data.evt_gatt_server_user_write_request.value.len - 1);
+          remote_certificate_der_len += evt->data.evt_gatt_server_user_write_request.value.len - 1;
+          sc = SL_STATUS_OK;
+
+          if (evt->data.evt_gatt_server_user_write_request.value.data[0] == 0) 
+          {
+            // Last packet of the remote cert arrived
+            LOG_CONN("Getting certificate from central");
+            remote_cert_arrived = true;
+            sc = sl_bt_cbap_process_remote_cert(remote_certificate_der, remote_certificate_der_len);
+            if (sc == SL_STATUS_OK) 
+            {
+              LOG_CONN("Remote certificate verified");
+              remote_cert_verified = true;
+            } 
+            else 
+            {
+              LOG_CONN("Remote certificate verification failed");
+              sc = SL_STATUS_BT_ATT_WRITE_REQUEST_REJECTED;
+              (void)sl_bt_connection_close(connection_handle);
+            }
+          }
+
+          // Map status code to a valid attribute error.
+          if (sc != SL_STATUS_OK) 
+          {
+            sc = SL_STATUS_BT_ATT_WRITE_REQUEST_REJECTED;
+          }
+        } 
+        else 
+        {
+          sc = SL_STATUS_BT_ATT_PROCEDURE_ALREADY_IN_PROGRESS;
+        }
+
+        // Confirmation and error response back, call this in sl_bt_evt_gatt_server_user_write_request_id event
+        sl_bt_gatt_server_send_user_write_response(evt->data.evt_gatt_server_user_write_request.connection,
+                                                   evt->data.evt_gatt_server_user_write_request.characteristic,
+                                                   (uint8_t)sc);
+      }
+      break;
+
+    // -------------------------------
+    // This event occurs in two cases: 
+    // when client send/dispatch GATT command to enable/disable the notification/indication for CCCD (1st bits or 2nd bits)
+    // or when server obtains an ACK indication from client
+    case sl_bt_evt_gatt_server_characteristic_status_id:
+      // this field contains the characteristic handle which client changed its CCCD
+      if(gattdb_current_time == evt->data.evt_gatt_server_characteristic_status.characteristic)
+      {
+        // A local Client Characteristic Configuration descriptor was changed in the gattdb_current_time characteristic.
+        // sl_bt_gatt_notification = 0x1, /**< (0x1) Notification */
+        // &and vs client_config_flags (0x01) to check if client enabled notification
+        LOG_CONN("client_config_flags (gattdb_usart_packet) 0x%02x", 
+                   evt->data.evt_gatt_server_characteristic_status.client_config_flags);
+        if(evt->data.evt_gatt_server_characteristic_status.client_config_flags & sl_bt_gatt_notification)
+        {
+          LOG_CONN("Notification enabled");
+          
+          // Send notification of the current time
+          sc = send_current_time_notification();
+          app_assert_status(sc);
+          printf("Sent current time\r\n");
+
+          notification = true;
+        }
+        else
+        {
+          printf("Notification disabled\r\n");
+
+          notification = false;
+        }
+      }
+
+      // /**
+      //  * @brief These values describe whether the characteristic client configuration
+      //  * was changed or whether a characteristic confirmation was received.
+      //  */
+      // typedef enum
+      // {
+      //   sl_bt_gatt_server_client_config = 0x1, /**< (0x1) Characteristic client
+      //                                               configuration has been changed. */
+      //   sl_bt_gatt_server_confirmation  = 0x2  /**< (0x2) Characteristic confirmation
+      //                                               has been received. */
+      // } sl_bt_gatt_server_characteristic_status_flag_t;
+
+      // Event: indication for usart packet characteristic
+      if(gattdb_usart_packet == evt->data.evt_gatt_server_characteristic_status.characteristic)
+      {
+        // Checking the client_configs_flags is correct 0x02 sl_bt_gatt_indication, 0x02 & 0x02 = 0x02
+        LOG_CONN("client_config_flags (gattdb_usart_packet) 0x%02x", 
+                   evt->data.evt_gatt_server_characteristic_status.client_config_flags);
+        if((sl_bt_gatt_server_client_config == (sl_bt_gatt_server_characteristic_status_flag_t)evt->data.evt_gatt_server_characteristic_status.status_flags)
+            && (evt->data.evt_gatt_server_characteristic_status.client_config_flags & sl_bt_gatt_indication) == 0x02)
+        {
+          LOG_CONN("Indication enabled");
+          sc = send_usart_packet_over_ble((uint8_t *)"WELCOME", 7);
+          if(sc == SL_STATUS_OK)
+          {
+            LOG_CONN("Sent first indication");
+          }
+        }
+        // Confirmation received from client for an indication
+        else if (evt->data.evt_gatt_server_characteristic_status.status_flags == sl_bt_gatt_server_confirmation) {
+          LOG_CONN("Client confirmed indication");
+          fragment_queue_on_confirmation(connection_handle, gattdb_usart_packet);
+        }
+        // Client disabled indications
+        else 
+        {
+          LOG_CONN("Indication disabled");
+        }
+      }
+
+      // Sends the Peripheral Cert after central sets gattdb_peripheral_cert descriptor value to sl_bt_gatt_indication
+      if (gattdb_peripheral_cert == evt->data.evt_gatt_server_characteristic_status.characteristic) 
+      {
+        if (sl_bt_gatt_server_client_config == (sl_bt_gatt_server_characteristic_status_flag_t)evt->data.evt_gatt_server_characteristic_status.status_flags
+            && sl_bt_gatt_indication == (sl_bt_gatt_client_config_flag_t)evt->data.evt_gatt_server_characteristic_status.client_config_flags
+            && device_cert_sent == false) 
+        {
+          uint8_t buff[CERT_IND_CHUNK_LEN + 1];
+          buff[0] = 1;
+          memcpy(&buff[1], device_certificate_der, CERT_IND_CHUNK_LEN);
+          sc = sl_bt_gatt_server_send_indication(connection_handle,
+                                                  gattdb_peripheral_cert,
+                                                  CERT_IND_CHUNK_LEN + 1,
+                                                  buff);
+          app_assert_status(sc);
+          dev_cert_sending_progression += CERT_IND_CHUNK_LEN;
+        }
+        // Sending Peripheral certificate's subsequent chunk to Central device
+        else if (sl_bt_gatt_server_confirmation == (sl_bt_gatt_server_characteristic_status_flag_t)evt->data.evt_gatt_server_characteristic_status.status_flags
+                  && device_cert_sent == false) 
+        {
+          uint32_t remaining = device_certificate_der_len - dev_cert_sending_progression;
+          uint8_t buff[CERT_IND_CHUNK_LEN + 1];
+          uint8_t len = 0;
+          if (remaining > CERT_IND_CHUNK_LEN) 
+          {
+            buff[0] = 1;
+            len = CERT_IND_CHUNK_LEN + 1;
+          } else 
+          {
+            // Send last chunk
+            buff[0] = 0;
+            len = remaining + 1;
+            device_cert_sent = true;
+          }
+          memcpy(&buff[1], &device_certificate_der[dev_cert_sending_progression], len - 1);
+          dev_cert_sending_progression += len - 1;
+          sc = sl_bt_gatt_server_send_indication(connection_handle,
+                                                  gattdb_peripheral_cert,
+                                                  len,
+                                                  buff);
+          app_assert_status(sc);
+        }  
+      } 
       break;
 
     // -------------------------------
@@ -449,119 +673,11 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
         sc = sl_bt_sm_passkey_confirm(connection_handle, 1);
         if(sc == SL_STATUS_OK)
         {
-          LOG_PAIRING("Passkey confirmed\r\n");
+          LOG_PAIRING("Passkey confirmed");
         }
       }
       break;
-
-    // -------------------------------
-    // This event indicates that the value of an attribute in the local GATT
-    // database was changed by a remote GATT client.
-    case sl_bt_evt_gatt_server_attribute_value_id:
-      if(gattdb_usart_packet == evt->data.evt_gatt_server_attribute_value.attribute)
-      {
-        uint8_t data_recv[20];
-        size_t data_recv_len;
-
-        // Read characteristic value
-        memset(data_recv, 0, sizeof(data_recv)-1);
-        sc = sl_bt_gatt_server_read_attribute_value(gattdb_usart_packet,
-                                                    0,
-                                                    20,
-                                                    &data_recv_len,
-                                                    data_recv);
-        (void)data_recv_len;   
-        app_assert_status(sc);
-        if (sc != SL_STATUS_OK) 
-        {
-          LOG_CONN("ERROR: Client wrote error");
-          break;
-        }
-
-        data_recv[data_recv_len] = '\0'; 
-        LOG_CONN("Written value by client: %s",data_recv);
-        // LOG_INFO("Last byte: %c", data_recv[data_recv_len-1]);
-      }
-      break;
-
-    // -------------------------------
-    // This event occurs in two cases: 
-    // when client send/dispatch GATT command to enable/disable the notification/indication for CCCD (1st bits or 2nd bits)
-    // or when server obtains an ACK indication from client
-    case sl_bt_evt_gatt_server_characteristic_status_id:
-      // this field contains the characteristic handle which client changed its CCCD
-      if(gattdb_current_time == evt->data.evt_gatt_server_characteristic_status.characteristic)
-      {
-        // A local Client Characteristic Configuration descriptor was changed in the gattdb_current_time characteristic.
-        // sl_bt_gatt_notification = 0x1, /**< (0x1) Notification */
-        // &and vs client_config_flags (0x01) to check if client enabled notification
-        LOG_CONN("client_config_flags (gattdb_usart_packet) 0x%02x", 
-                   evt->data.evt_gatt_server_characteristic_status.client_config_flags);
-        if(evt->data.evt_gatt_server_characteristic_status.client_config_flags & sl_bt_gatt_notification)
-        {
-          LOG_CONN("Notification enabled");
-          
-          // Send notification of the current time
-          sc = send_current_time_notification();
-          app_assert_status(sc);
-          printf("Sent current time\r\n");
-
-          notification = true;
-        }
-        else
-        {
-          printf("Notification disabled\r\n");
-
-          notification = false;
-        }
-      }
-
-      // event: indication for usart packet characteristic
-      if(gattdb_usart_packet == evt->data.evt_gatt_server_characteristic_status.characteristic)
-      {
-        // Checking the client_configs_flags is correct 0x02 sl_bt_gatt_indication, 0x02 & 0x02 = 0x02
-        LOG_CONN("client_config_flags (gattdb_usart_packet) 0x%02x", 
-                   evt->data.evt_gatt_server_characteristic_status.client_config_flags);
-        if((evt->data.evt_gatt_server_characteristic_status.client_config_flags & sl_bt_gatt_indication) == 0x2
-            && (ind_state == INDICATION_DISABLE))
-        {
-          ind_state = INDICATION_ENABLE;
-          LOG_CONN("Indication enabled");
-
-          sc = send_usart_packet_over_ble((uint8_t *)"WELCOME", 7);
-          if(sc == SL_STATUS_OK)
-          {
-            LOG_CONN("Sent first indication");
-          }
-        }
-        // verify the confirmation after every indication sent (sl_bt_gatt_server_confirmation (enum) and status_flags)
-        else if((evt->data.evt_gatt_server_characteristic_status.status_flags == sl_bt_gatt_server_confirmation)
-                  && (ind_state == INDICATION_ENABLE || ind_state == INDICATION_CONFIRM))
-        {
-          ind_state = INDICATION_CONFIRM;
-          LOG_CONN("Client confirmed indication");
-          fragment_queue_on_confirmation(connection_handle, gattdb_usart_packet);
-        }
-        else
-        {
-          ind_state = INDICATION_DISABLE;
-          LOG_CONN("Indication disabled");
-        }
-      }
-
-      // /**
-      //  * @brief These values describe whether the characteristic client configuration
-      //  * was changed or whether a characteristic confirmation was received.
-      //  */
-      // typedef enum
-      // {
-      //   sl_bt_gatt_server_client_config = 0x1, /**< (0x1) Characteristic client
-      //                                               configuration has been changed. */
-      //   sl_bt_gatt_server_confirmation  = 0x2  /**< (0x2) Characteristic confirmation
-      //                                               has been received. */
-      // } sl_bt_gatt_server_characteristic_status_flag_t;
-      break;
-
+  
     // -------------------------------
     // Default event handler.
     default:
@@ -735,6 +851,42 @@ static sl_status_t send_current_time_notification(void)
 
   return sc;
 } 
+
+/*******************************************************************************
+ * Minimal CBAP helper functions (peripheral-only)
+ *******************************************************************************/
+static void clear_certificate_state(void)
+{
+  memset(remote_certificate_der, 0, sizeof(remote_certificate_der));
+  remote_certificate_der_len = 0;
+  remote_cert_arrived = false;
+  remote_cert_verified = false;
+}
+
+static void on_error(void)
+{
+  if (connection_handle != 0xFF) {
+    LOG_BONDING("CBAP procedure was aborted for connection %d", connection_handle);
+    (void)sl_bt_connection_close(connection_handle);
+  }
+  clear_certificate_state();
+}
+
+static void app_reset(void)
+{
+  clear_certificate_state();
+
+  // Restart advertising if not already advertising
+  if (!advertising) {
+    sl_status_t sc = sl_bt_legacy_advertiser_start(advertising_set_handle,
+                                                   sl_bt_legacy_advertiser_connectable);
+    if (sc == SL_STATUS_OK) {
+      advertising = true;
+      LOG_CONN("Advertising restarted by app_reset");
+    }
+  }
+}
+
 
 /**
  * @brief Queue a USART payload for transmission over BLE using indications.

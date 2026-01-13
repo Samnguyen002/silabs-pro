@@ -76,7 +76,7 @@
   </service>
 
   <!--Usart Service-->
-  <service advertise="false" id="usart_service_0" name="Usart Service" requirement="mandatory" sourceId="" type="primary" uuid="467d81d9-80b8-4cdf-8362-d97213573040">
+  <service advertise="true" id="usart_service_0" name="Usart Service" requirement="mandatory" sourceId="" type="primary" uuid="467d81d9-80b8-4cdf-8362-d97213573040">
 
     <!--Usart Characteristic-->
     <characteristic const="false" id="usart_packet" name="Usart Characteristic" sourceId="" uuid="17ba79a5-a2d4-4107-b1df-d3097c743dfa">
@@ -115,6 +115,36 @@ Summary: Many Bluetooth devices have the ability to store and show time informat
       <value length="4" type="hex" variable_length="false"/>
       <properties>
         <read authenticated="false" bonded="false" encrypted="false"/>
+      </properties>
+    </characteristic>
+  </service>
+
+  <!--CBAP Service-->
+  <service advertise="true" name="CBAP Service" requirement="mandatory" sourceId="" type="primary" uuid="f43908e1-cf0d-433f-a69b-9e9e8a77f04d">
+
+    <!--Central Cert-->
+    <characteristic const="false" id="central_cert" name="Central Cert" sourceId="" uuid="f25834ae-a875-4ad6-9951-0866f80db9dd">
+      <value length="0" type="user" variable_length="false">00</value>
+      <properties>
+        <write authenticated="false" bonded="false" encrypted="false"/>
+      </properties>
+    </characteristic>
+
+    <!--Peripheral Cert-->
+    <characteristic const="false" id="peripheral_cert" name="Peripheral Cert" sourceId="" uuid="e0392f45-3fa8-41d4-8078-b8ed162fcfa3">
+      <value length="0" type="user" variable_length="false">00</value>
+      <properties>
+        <indicate authenticated="false" bonded="false" encrypted="false"/>
+      </properties>
+    </characteristic>
+
+    <!--Initiator PassKey-->
+    <characteristic const="false" id="initiator_passkey" name="Initiator PassKey" sourceId="" uuid="dd4a4172-f7f6-4ce0-b630-93c4549ddc65">
+      <informativeText>Iniitiator generates an passkey in pairing process for Numeric comparision Mode, encrypts it and then it will be indicated to central device for setting up an passkey in that site.</informativeText>
+      <value length="0" type="user" variable_length="false">00</value>
+      <properties>
+        <write authenticated="false" bonded="false" encrypted="false"/>
+        <indicate authenticated="false" bonded="false" encrypted="false"/>
       </properties>
     </characteristic>
   </service>
