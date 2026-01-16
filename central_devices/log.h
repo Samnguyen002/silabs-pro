@@ -27,6 +27,7 @@
 #define PAIRING_PREFIX           "[PAIRING] "
 #define BONDING_PREFIX           "[BOND] "
 #define INFO_PREFIX              "[I] "
+#define ERROR_PREFIX             "[ERROR] "
 
 #define LOG_BUTTON(fmt, ...)    printf(BUTTON_SERVICE_PREFIX fmt PRINTF_LOG_NL, ##__VA_ARGS__)
 #define LOG_BOOT(fmt, ...)      printf(SYSTEMBOOT_PREFIX fmt PRINTF_LOG_NL, ##__VA_ARGS__)
@@ -37,5 +38,6 @@
 #define LOG_PAIRING(fmt, ...)   printf(PAIRING_PREFIX fmt PRINTF_LOG_NL, ##__VA_ARGS__)
 #define LOG_BONDING(fmt, ...)   printf(BONDING_PREFIX fmt PRINTF_LOG_NL, ##__VA_ARGS__)
 #define LOG_INFO(fmt, ...)      printf(INFO_PREFIX fmt PRINTF_LOG_NL, ##__VA_ARGS__)
+#define LOG_ERROR(fmt, ...)     printf(ERROR_PREFIX fmt PRINTF_LOG_NL, ##__VA_ARGS__)
 
 #endif

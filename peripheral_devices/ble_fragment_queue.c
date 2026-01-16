@@ -102,7 +102,7 @@ sl_status_t fragment_queue_prepare(uint8_t connection, uint16_t characteristic,
     frag_queue.current_fragment = 0;
     frag_queue.is_sending = true;
 
-    LOG_INFO("Total payload: %lu bytes", payload_len);
+    LOG_INFO("Total payload: %lu bytes", (uint32_t)payload_len);
     LOG_INFO("Total fragments: %u", frag_queue.total_fragments);
     for(int i = 0; i < frag_queue.total_fragments; i++)
     {

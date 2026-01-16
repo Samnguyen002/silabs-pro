@@ -34,7 +34,7 @@
 #include "gatt_db.h"
 #include "app.h"
 #include "sl_sleeptimer.h"
-#include "sl_bt_cbap.h"
+#include "./sl_cbap+/sl_cbap+_passkey.h"
 
 #include "burtc.h"
 #include "app_iostream_usart.h"
@@ -97,7 +97,6 @@ static char passkey_display_string[] = "00000000000000";
 static uint32_t xOffset, yOffset;
 static GLIB_Context_t glibContext;
 
-static volatile uint32_t passkey = 0;
 static volatile pair_state_t state = IDLE;
 
 uint8_t adv_payload[] = {
@@ -125,7 +124,12 @@ static uint8_t remote_certificate_der[CHAIN_LINK_DATA_LEN * CHAIN_LINK_DATA_NUM]
 static uint32_t remote_certificate_der_len = 0;
 static bool remote_cert_arrived = false;
 static bool remote_cert_verified = false;
+
 // -----------------------------------------------------------------------------
+// Passkey
+static volatile uint32_t passkey = 0;
+static uint8_t signed_passkey_data[SIGNATURE_DATA_LEN];
+static uint8_t signed_passkey_data_len = 0;
 
 // Variables to hold BURTC count and converted time in seconds.
 static uint32_t count;
@@ -172,9 +176,9 @@ void app_init(void)
   app_button_pairing_init(button_event_handler);
 
   // Initialize CBAP component to enable certificate processing 
-  sl_status_t sc = sl_bt_cbap_init(device_certificate_der, &device_certificate_der_len);
+  sl_status_t sc = sl_cbap_init(device_certificate_der, &device_certificate_der_len);
   app_assert_status(sc);
-  LOG_BOOT("CBAP initialized. Device certificate verified");
+  LOG_INFO("CBAP initialized. Device certificate verified");
 }
 
 // Application Process Action.
@@ -436,7 +440,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
             // Last packet of the remote cert arrived
             LOG_CONN("Getting certificate from central");
             remote_cert_arrived = true;
-            sc = sl_bt_cbap_process_remote_cert(remote_certificate_der, remote_certificate_der_len);
+            sc = sl_cbap_process_remote_cert(remote_certificate_der, remote_certificate_der_len);
             if (sc == SL_STATUS_OK) 
             {
               LOG_CONN("Remote certificate verified");
@@ -488,14 +492,12 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
           // Send notification of the current time
           sc = send_current_time_notification();
           app_assert_status(sc);
-          printf("Sent current time\r\n");
-
+          LOG_CONN("Sent current time");
           notification = true;
         }
         else
         {
-          printf("Notification disabled\r\n");
-
+          LOG_CONN("Notification disabled");
           notification = false;
         }
       }
@@ -539,9 +541,8 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
           LOG_CONN("Indication disabled");
         }
       }
-
       // Sends the Peripheral Cert after central sets gattdb_peripheral_cert descriptor value to sl_bt_gatt_indication
-      if (gattdb_peripheral_cert == evt->data.evt_gatt_server_characteristic_status.characteristic) 
+      else if (gattdb_peripheral_cert == evt->data.evt_gatt_server_characteristic_status.characteristic) 
       {
         if (sl_bt_gatt_server_client_config == (sl_bt_gatt_server_characteristic_status_flag_t)evt->data.evt_gatt_server_characteristic_status.status_flags
             && sl_bt_gatt_indication == (sl_bt_gatt_client_config_flag_t)evt->data.evt_gatt_server_characteristic_status.client_config_flags
@@ -551,9 +552,9 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
           buff[0] = 1;
           memcpy(&buff[1], device_certificate_der, CERT_IND_CHUNK_LEN);
           sc = sl_bt_gatt_server_send_indication(connection_handle,
-                                                  gattdb_peripheral_cert,
-                                                  CERT_IND_CHUNK_LEN + 1,
-                                                  buff);
+                                                 gattdb_peripheral_cert,
+                                                 CERT_IND_CHUNK_LEN + 1,
+                                                 buff);
           app_assert_status(sc);
           dev_cert_sending_progression += CERT_IND_CHUNK_LEN;
         }
@@ -561,6 +562,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
         else if (sl_bt_gatt_server_confirmation == (sl_bt_gatt_server_characteristic_status_flag_t)evt->data.evt_gatt_server_characteristic_status.status_flags
                   && device_cert_sent == false) 
         {
+          LOG_CONN("Peripheral received a confirmation");
           uint32_t remaining = device_certificate_der_len - dev_cert_sending_progression;
           uint8_t buff[CERT_IND_CHUNK_LEN + 1];
           uint8_t len = 0;
@@ -568,7 +570,8 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
           {
             buff[0] = 1;
             len = CERT_IND_CHUNK_LEN + 1;
-          } else 
+          } 
+          else 
           {
             // Send last chunk
             buff[0] = 0;
@@ -583,6 +586,54 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
                                                   buff);
           app_assert_status(sc);
         }  
+      }
+      else if(gattdb_initiator_passkey == evt->data.evt_gatt_server_characteristic_status.characteristic)
+      {
+        if(sl_bt_gatt_server_client_config == (sl_bt_gatt_server_characteristic_status_flag_t)evt->data.evt_gatt_server_characteristic_status.status_flags
+           && sl_bt_gatt_indication == (sl_bt_gatt_client_config_flag_t)evt->data.evt_gatt_server_characteristic_status.client_config_flags)
+        {
+          passkey = make_passkey_from_address(address);
+          LOG_CONN("Paskkey will be set in Central site: %lu", passkey);
+
+          sc = sl_cbap_sign_passkey(passkey, signed_passkey_data, (size_t *)&signed_passkey_data_len);
+          app_assert_status(sc);
+          LOG_CONN("Device Passkey:");
+          app_log_hexdump_info(&signed_passkey_data, PASSKEY_LEN);
+          app_log_info(APP_LOG_NL);
+          LOG_CONN("Device Signature:");
+          app_log_hexdump_info(&signed_passkey_data[PASSKEY_LEN], SIGNATURE_DATA_LEN);  
+          app_log_info(APP_LOG_NL);
+
+          sc = sl_bt_gatt_server_send_indication(connection_handle,
+                                                gattdb_initiator_passkey,
+                                                signed_passkey_data_len,
+                                                signed_passkey_data);
+          app_assert_status(sc);
+          LOG_CONN("Sended Passkey Signature");
+        }
+        else if(sl_bt_gatt_server_confirmation == (sl_bt_gatt_server_characteristic_status_flag_t)evt->data.evt_gatt_server_characteristic_status.status_flags)
+        {
+          // Receive a confirmation of passkey's characteristic
+          sc = sl_bt_sm_configure(MITM_PROTECTION, IO_CAPABILITY);
+          app_assert_status(sc);
+          LOG_CONN("NUMERIC COMPARISION pairing mode");
+          LOG_CONN("Bonding with LE Secure mode, with authentication,...");
+
+          sc = sl_bt_sm_set_passkey(passkey);
+          app_assert_status(sc);
+          LOG_CONN("Enter the fixed passkey for stack: %lu", passkey);
+
+          sc = sl_bt_sm_set_bondable_mode(1);
+          app_assert_status(sc);
+          LOG_CONN("Bondings allowed");
+
+          sc = sl_bt_sm_delete_bondings();
+          app_assert_status(sc);
+          LOG_CONN("Old bondings deleted");
+
+          sc = sl_bt_sm_increase_security(connection_handle);
+          app_assert_status(sc);
+        }
       } 
       break;
 
@@ -851,42 +902,6 @@ static sl_status_t send_current_time_notification(void)
 
   return sc;
 } 
-
-/*******************************************************************************
- * Minimal CBAP helper functions (peripheral-only)
- *******************************************************************************/
-static void clear_certificate_state(void)
-{
-  memset(remote_certificate_der, 0, sizeof(remote_certificate_der));
-  remote_certificate_der_len = 0;
-  remote_cert_arrived = false;
-  remote_cert_verified = false;
-}
-
-static void on_error(void)
-{
-  if (connection_handle != 0xFF) {
-    LOG_BONDING("CBAP procedure was aborted for connection %d", connection_handle);
-    (void)sl_bt_connection_close(connection_handle);
-  }
-  clear_certificate_state();
-}
-
-static void app_reset(void)
-{
-  clear_certificate_state();
-
-  // Restart advertising if not already advertising
-  if (!advertising) {
-    sl_status_t sc = sl_bt_legacy_advertiser_start(advertising_set_handle,
-                                                   sl_bt_legacy_advertiser_connectable);
-    if (sc == SL_STATUS_OK) {
-      advertising = true;
-      LOG_CONN("Advertising restarted by app_reset");
-    }
-  }
-}
-
 
 /**
  * @brief Queue a USART payload for transmission over BLE using indications.

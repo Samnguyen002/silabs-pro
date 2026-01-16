@@ -28,6 +28,7 @@ toolchain_settings: []
 component:
 - {id: EFR32MG24B220F1536IM48}
 - {id: app_assert}
+- {id: app_log}
 - {id: app_os_helper}
 - {id: bluetooth_feature_connection_role_central}
 - {id: bluetooth_feature_connection_role_peripheral}

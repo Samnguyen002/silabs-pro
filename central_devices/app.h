@@ -52,13 +52,17 @@
 #define EC_PUB_KEY_LEN                65
 #define PUB_KEY_OFFSET                26
 
+#define PASSKEY_LEN                   4    // PassKey is 6-digit number (stored as uint32_t)
+#define SIGNATURE_LEN                 64   // ECDSA signature length
+#define SIGNATURE_DATA_LEN            (PASSKEY_LEN + SIGNATURE_LEN)
+
 // -----------------------------------------------------------------------------
 // Type definitions
 
 /// Connection properties
 typedef struct {
   uint8_t  connection_handle;
-  bd_addr address;
+  bd_addr  address;
   int8_t   rssi;
   bool     power_control_active;
   int8_t   tx_power;
@@ -66,6 +70,7 @@ typedef struct {
   uint8_t  server_address[6];
   uint32_t usart_service_handle;
   uint16_t usartpacket_characteristic_handle;
+  uint32_t cbap_service_handle;
 } conn_properties_t;
 
 /// Characteristic properties
@@ -98,12 +103,16 @@ typedef enum {
 /// Central device states
 typedef enum {
   CENTRAL_SCANNING,
+  CENTRAL_OPENNING,
   CENTRAL_DISCOVER_SERVICES,
   CENTRAL_DISCOVER_CHARACTERISTICS,
   CENTRAL_GET_PERIPHERAL_CERT,
   CENTRAL_SEND_CENTRAL_CERT,
   CENTRAL_GET_PASSKEY,
-  CENTRAL_INCREASE_SECURITY,
+  CENTRAL_CONFIG_SECURITY,
+  CENTRAL_DISCOVER_USART_S,
+  CENTRAL_DISCOVER_USART_C,
+  CENTRAL_DISCOVER_USART_DONE,
   CENTRAL_DONE,
   CENTRAL_STATE_NUM        // Position corresponding to the number of Central's states
 } central_state_t;
@@ -112,6 +121,8 @@ typedef enum {
 typedef enum {
   PERIPHERAL_IDLE,
   PERIPHERAL_CENTRAL_CERT_OK,
+  PERIPHERAL_SEND_PASSKEY,
+  PERIPHERAL_INCREASE_SECURITY,
   PERIPHERAL_DONE,
   PERIPHERAL_STATE_NUM     // Position corresponding to the number of Peripheral's states
 } peripheral_state_t;

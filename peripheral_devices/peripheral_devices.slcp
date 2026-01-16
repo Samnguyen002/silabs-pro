@@ -23,6 +23,9 @@ include:
 - path: .
   file_list:
   - {path: app.h}
+- path: sl_cbap+
+  file_list:
+  - {path: sl_cbap+_passkey.h}
 sdk: {id: simplicity_sdk, version: 2025.6.2}
 toolchain_settings: []
 component:

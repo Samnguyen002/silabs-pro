@@ -35,6 +35,7 @@
 #include "sl_bluetooth.h"
 #include "sl_status.h"
 #include "sl_sleeptimer.h"
+#include "./sl_cbap+/sl_cbap+_passkey.h"
 
 #include "app_iostream_usart.h"
 #include "ble_defragment_rxdata.h"
@@ -53,7 +54,7 @@
 #define CONN_INTERVAL_MIN             80   // 100ms
 #define CONN_INTERVAL_MAX             100  // 100*10ms
 #define CONN_RESPONDER_LATENCY        0    // no latency
-#define CONN_TIMEOUT                  500  // 500*10ms
+#define CONN_TIMEOUT                  500  // 500*10ms -> Supervision Timeout > (1+Slave_Latency)xConnection_Intervalx2
 #define CONN_MIN_CE_LENGTH            0
 #define CONN_MAX_CE_LENGTH            0xffff
 
@@ -89,18 +90,6 @@
 
 typedef enum
 {
-  scanning,
-  opening,
-  pairing,
-  discover_services,
-  discover_characteristics,
-  enable_indication,
-  running,
-  handle_rxdata
-} conn_state_t;
-
-typedef enum
-{
   IDLE,
   DISPLAY_PASSKEY,
   PROMPT_YESNO,
@@ -109,11 +98,32 @@ typedef enum
   BOND_FAILURE
 } pair_state_t;
 
+// State machine of data processing
+typedef enum
+{
+  PROCEED,
+  TERMINATE
+} data_state_t;
+
+// -----------------------------------------------------------------------------
+// Certificates
+
+// Device certificate in DER format
+static uint8_t device_certificate_der[CHAIN_LINK_DATA_LEN * CHAIN_LINK_DATA_NUM] = { 0 };
+static uint32_t device_certificate_der_len = 0;
+static uint32_t dev_cert_sending_progression = 0;
+static bool device_cert_sent = false;
+
+// Remote certificate which was sent over GATT in DER format
+static uint8_t remote_certificate_der[CHAIN_LINK_DATA_LEN * CHAIN_LINK_DATA_NUM] = { 0 };
+static uint32_t remote_certificate_der_len = 0;
+static bool remote_cert_arrived = false;
+static bool remote_cert_verified = false;
+
 // -----------------------------------------------------------------------------
 // GATT
 
 // Reference to the CBAP service.
-static uint32_t cbap_service_handle = HANDLE_NOT_INITIALIZED;
 static const uint8_t cbap_service_uuid[] = { CBAP_SERVICE_UUID };
 
 // Reference to the CBAP characteristics.
@@ -128,66 +138,58 @@ static characteristic_128_ref_t cbap_characteristics[] = {
   },
   {
     .handle = HANDLE_NOT_INITIALIZED,
-    .uuid = { CENTRAL_OOB_CHAR_UUID }
+    .uuid = { CHAR_INITIATOR_PASSKEY }
   },
-  {
-    .handle = HANDLE_NOT_INITIALIZED,
-    .uuid = { PERIPHERAL_OOB_CHAR_UUID }
-  }
 };
 
 // My custom service UUID in gattdb (server)
 // I need AD type 0x07 -> complete list of custom services (128bits)
 // 8935c600-3a0e-4388-92ed-8f6de23f3f5a -> convert Little endian: 5a3f3fe26d8fed9288430e3a00c63589
-static const uint8_t current_time_service[2] = { 0x05, 0x18 };
-static const uint8_t name_service[2] = { 0x00, 0x18 };
-static const uint8_t name_characteristic[2] = { 0x00, 0x2A };
 static const uint8_t usart_service[16] = { 0x40, 0x30, 0x57, 0x13, 0x72, 0xd9, 0x62, 0x83, 
                                            0xdf, 0x4c, 0xb8, 0x80, 0xd9, 0x81, 0x7d, 0x46 };
 static const uint8_t usart_char[16] = { 0xfa, 0x3d, 0x74, 0x7c, 0x09, 0xd3, 0xdf, 0xb1, 
                                         0x07, 0x41, 0xd4, 0xa2, 0xa5, 0x79, 0xba, 0x17 };
 
 // -----------------------------------------------------------------------------
+// Remote Passkey
+static volatile uint32_t remote_passkey = 0;
 
 // Array for holding properties of multiple (parallel) connections
 static conn_properties_t conn_properties[SL_BT_CONFIG_MAX_CONNECTIONS];
-
-// Array for holding properties of the trusted connections
-static conconn_properties_t trusted_devices[SL_BT_CONFIG_MAX_CONNECTIONS];
-
+// This variable holds the connection handle of the current connection
+// serving for evt confirm_passkey
+static conn_properties_t candidate_device;
 // Counter of active connections
 static uint8_t active_connections_num;
 
-// This variable holds the connection handle of the current connection
-// serving for evt confirm_passkey
-static uint8_t temp_connec_handle;
-
 // State of connection under establishment
-conn_state_t conn_state;
-conn_state_t indi_state;
+static central_state_t conn_state;
+// Pointing to the characteristic that shall be discovered next
+static characteristics_t char_state;
+// State of pairing process
 static volatile pair_state_t state = IDLE;
+// State of data processing is unrelated to connection process
+static data_state_t data_state;
 
 // [DISPLAY] Default strings and context used to show role and passkey on the LCD display
 static char role_display_string[] = "   INITIATOR   ";
 static char passkey_display_string[] = "00000000000000";
 static uint32_t xOffset, yOffset;
 static GLIB_Context_t glibContext;
-static volatile uint32_t passkey = 0;
 
 // Init properties
 static void init_properties(void);
+// Find service
+static sl_status_t find_service_in_advertisement(uint8_t *data, uint8_t len);
+// Add connection with server
+static uint8_t find_index_by_connection_handle(uint8_t connection);
+static void add_connection(void);
+static void remove_connection(uint8_t connection);
+static inline void reset_candidate_prop(conn_properties_t *dev); 
 
 // Show bluetooth address
 static bd_addr *read_and_cache_bluetooth_address(uint8_t *address_type_out);
 static void printf_bluetooth_address(void);
-
-// Find service
-static sl_status_t find_service_in_advertisement(uint8_t *data, uint8_t len);
-
-// Add connection with server
-static uint8_t find_index_by_connection_handle(uint8_t connection);
-static void add_connection(uint8_t connection, uint8_t *address);
-static void remove_connection(uint8_t connection);
 
 #if(IO_CAPABILITY != KEYBOARDONLY)
 static uint32_t make_passkey_from_address(bd_addr address);
@@ -214,12 +216,17 @@ void app_init(void)
   defrag_init();
   graphics_init();
   app_button_pairing_init(button_event_handler);
+
+  // Initialize CBAP component to enable certificate processing 
+  sl_status_t sc = sl_cbap_init(device_certificate_der, &device_certificate_der_len);
+  app_assert_status(sc);
+  LOG_INFO("CBAP initialized. Device certificate verified");
 }
 
 // Application Process Action.
 void app_process_action(void)
 {
-  if(indi_state == handle_rxdata)
+  if(data_state == PROCEED)
   {
     defrag_enum_t rx_data_state = defrag_process_fragment();
     if(rx_data_state == DEFRAG_COMPLETE)
@@ -235,7 +242,6 @@ void app_process_action(void)
           LOG_INFO("->Payload Ready:");
           LOG_INFO("->Length: %d bytes", (int)payload_len);
           LOG_INFO("->Data: \"%.*s\" ", (int)payload_len, payload);
-          
         }
         else
         {
@@ -252,7 +258,7 @@ void app_process_action(void)
       defrag_reset();
     }
 
-    indi_state = running;
+    data_state = TERMINATE;
   }
 
   if (app_is_process_required()) {
@@ -269,9 +275,7 @@ void app_process_action(void)
 void sl_bt_on_event(sl_bt_msg_t *evt)
 {
   sl_status_t sc;
-  uint8_t addr_value[6];
   uint8_t table_index;
-  bd_addr address;
 
   switch (SL_BT_MSG_ID(evt->header)) {
     // -------------------------------
@@ -287,29 +291,6 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
               evt->data.evt_system_boot.hash); 
 
       printf_bluetooth_address();
-      
-      // Configuration according to constants set at compile time
-      // Configure security requirements and I/O capabilities of the system
-      sc = sl_bt_sm_configure(MITM_PROTECTION, IO_CAPABILITY);
-      app_assert_status(sc);
-      LOG_BOOT("Passkey pairing mode");
-      LOG_BOOT("Security level 4");
-      LOG_BOOT("I/O DISPLAYYESNO");
-      LOG_BOOT("Bonding with LE Secure mode, with authentication,...");
-
-      passkey = make_passkey_from_address(address);
-      LOG_BOOT("Passkey: %lu", passkey);
-      sc = sl_bt_sm_set_passkey(passkey);
-      app_assert_status(sc);
-      LOG_BOOT("Enter the fixed passkey for stack: %lu", passkey);
-
-      sc = sl_bt_sm_set_bondable_mode(1);
-      app_assert_status(sc);
-      LOG_BOOT("Bondings allowed");
-
-      sc = sl_bt_sm_delete_bondings();
-      app_assert_status(sc);
-      LOG_BOOT("Old bondings deleted");
 
       // Set the default connection parameters for subsequent connections
       sc = sl_bt_connection_set_default_parameters(CONN_INTERVAL_MIN,
@@ -326,8 +307,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       app_assert_status(sc);
       app_assert_status_f(sc, "Failed to start discovery #1\r\n");
       LOG_SCANN("Started scanning %02lx", sc);
-
-      conn_state = scanning;
+      conn_state = CENTRAL_SCANNING;
       break;
 
     // -------------------------------
@@ -354,7 +334,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
           LOG_SCANN("Stopped scanning after finding my service");
 
           // And connect to that device, guarantee the number of connections < Max
-          if (active_connections_num < SL_BT_CONFIG_MAX_CONNECTIONS) {
+          if(active_connections_num < SL_BT_CONFIG_MAX_CONNECTIONS) {
             LOG_CONN("Connecting to the central device, active_connection_num %d", (int)active_connections_num);
             sc = sl_bt_connection_open(evt->data.evt_scanner_legacy_advertisement_report.address,
                                        evt->data.evt_scanner_legacy_advertisement_report.address_type,
@@ -363,7 +343,7 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
             app_assert_status(sc);
             LOG_CONN("Connection request sent");
 
-            conn_state = opening;
+            conn_state = CENTRAL_OPENNING;
           }
         }
       }
@@ -372,45 +352,54 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
     // -------------------------------
     // This event indicates that a new connection was opened.
     case sl_bt_evt_connection_opened_id:
-      LOG_CONN("Connected with that device");
+      LOG_CONN("Connected with target device");
       LOG_CONN("Pairing process before discovering services");
 
-      // [Note]: Initially, I discovered services right after connecting, but when adding sercurity features
-      // the pairing/bonding phase, we should perform pairing first before discovering. Therefore, this discovery
-      // phase will be moved to "sl_bt_evt_sm_bonded_id" event after bonding is completed successfully.
-      // And the connection to the table conn_properties will be added in "sl_bt_evt_sm_bonded_id" event.
-      sc = sl_bt_sm_increase_security(evt->data.evt_connection_opened.connection);
-      app_assert_status(sc);
-      if(sc == SL_STATUS_OK)
+      // Store data of the candidate device
+      candidate_device.connection_handle = evt->data.evt_connection_opened.connection;
+      candidate_device.address = evt->data.evt_connection_opened.address;
+
+      // Check if there is a connection with this device already
+      for(uint8_t i = 0; i < SL_BT_CONFIG_MAX_CONNECTIONS; i++)
       {
-        LOG_CONN("sl_bt_sm_increase_security returned 0x%02lx", sc);
+        if(memcmp(candidate_device.address.addr, conn_properties[i].address.addr, sizeof(bd_addr)) == 0)
+        {
+          LOG_ERROR("Device existed %u", candidate_device.connection_handle);
+          LOG_ERROR("Clear device property");
+          (void)sl_bt_connection_close(candidate_device.connection_handle);
+          reset_candidate_prop(&candidate_device);
+          break;
+        }
       }
-      LOG_CONN("[SECURITY] Enable encryption");
 
-      // Reserve the address of connected device
-      memcpy(addr_value, evt->data.evt_connection_opened.address.addr, 6);
-      //  Add connection to the connection_properties array
-      add_connection(evt->data.evt_connection_opened.connection, addr_value);
-      LOG_CONN("Reserved the addr of server device: ");
-      for(int i = 5; i >= 0; i--)
-        printf("%02X : ", addr_value[i]);
-      printf("\r\n");
-
-      temp_connec_handle = evt->data.evt_connection_opened.connection;
-
-      conn_state = pairing;
+      sc = sl_bt_gatt_discover_primary_services_by_uuid(candidate_device.connection_handle,
+                                                        sizeof(cbap_service_uuid),
+                                                        (const uint8_t *)cbap_service_uuid);
+      app_assert_status(sc);
+      LOG_CONN("Discovering CBAP services.");
+      conn_state = CENTRAL_DISCOVER_SERVICES;
       break;
 
     // -------------------------------
     // This event is generated when a new service is discovered.
     // Reserve service handle
     case sl_bt_evt_gatt_service_id:
-      table_index = find_index_by_connection_handle(evt->data.evt_gatt_service.connection);
-      if (table_index != TABLE_INDEX_INVALID) 
+      if(candidate_device.cbap_service_handle == SERVICE_HANDLE_INVALID) 
       {
         // Save service handle for future reference
-        conn_properties[table_index].usart_service_handle = evt->data.evt_gatt_service.service;
-        LOG_DISC("Service handle was received: %d", (int)evt->data.evt_gatt_service.service);
+        candidate_device.cbap_service_handle = evt->data.evt_gatt_service.service;
+        LOG_DISC("Service CBAP handle was received: %lu", evt->data.evt_gatt_service.service);
+      }
+      else
+      {
+        // Save usart service
+        table_index = find_index_by_connection_handle(evt->data.evt_gatt_service.connection);
+        if(table_index != TABLE_INDEX_INVALID) 
+        {
+          // Save service handle for future reference
+          conn_properties[table_index].usart_service_handle = evt->data.evt_gatt_service.service;
+          LOG_DISC("Usart service handle was received: %d", (int)evt->data.evt_gatt_service.service);
+        }
       }
       break;
 
@@ -419,12 +408,22 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
     // The characteristic discovery will be perform in sl_bt_evt_gatt_procedure_completed_id event when service discovery is completed
     // Reserve characteristic handle
     case sl_bt_evt_gatt_characteristic_id:
-      table_index = find_index_by_connection_handle(evt->data.evt_gatt_characteristic.connection);
-      if (table_index != TABLE_INDEX_INVALID) 
+      if(cbap_characteristics[char_state].handle == HANDLE_NOT_INITIALIZED)
       {
         // Save service handle for future reference
-        conn_properties[table_index].usartpacket_characteristic_handle = evt->data.evt_gatt_characteristic.characteristic;
-        LOG_DISC(">Characteristic handle was received: %d", (int)evt->data.evt_gatt_characteristic.characteristic);
+        cbap_characteristics[char_state].handle = evt->data.evt_gatt_characteristic.characteristic;
+        LOG_DISC("Characteristic handle was received: %u", evt->data.evt_gatt_characteristic.characteristic);
+      }
+      else
+      {
+        // Save usart service
+        table_index = find_index_by_connection_handle(evt->data.evt_gatt_service.connection);
+        if(table_index != TABLE_INDEX_INVALID) 
+        {
+          // Save service handle for future reference
+          conn_properties[table_index].usartpacket_characteristic_handle =  evt->data.evt_gatt_characteristic.characteristic;
+          LOG_DISC("Usart service handle was received: %d",  evt->data.evt_gatt_characteristic.characteristic);
+        }
       }
       break;
 
@@ -434,59 +433,173 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
     case sl_bt_evt_gatt_procedure_completed_id:
       // Indicates that the current GATT procedure was completed successfully
       // or that it failed with an error
-      table_index = find_index_by_connection_handle(evt->data.evt_gatt_procedure_completed.connection);
-      if (table_index == TABLE_INDEX_INVALID) 
-      { 
+
+      // Check result error
+      if (evt->data.evt_gatt_procedure_completed.result != 0) {
+        LOG_ERROR("GATT procedure completed error. Connection: %d. Error: 0x%04x.",
+                      evt->data.evt_gatt_procedure_completed.connection,
+                      evt->data.evt_gatt_procedure_completed.result);
+        reset_candidate_prop(&candidate_device);
+        (void)sl_bt_connection_close(candidate_device.connection_handle);
         break;
       }
 
-      // The service discovery was completed successfully. Start discovering characteristic
-      if(conn_state == discover_services && conn_properties[table_index].usart_service_handle != SERVICE_HANDLE_INVALID)
+      switch(conn_state)
       {
-        sc = sl_bt_gatt_discover_characteristics_by_uuid(evt->data.evt_gatt_procedure_completed.connection,   // connection
-                                                        conn_properties[table_index].usart_service_handle,   // service
-                                                        sizeof(usart_char),                                  // uuid_len
-                                                        (const uint8_t*)usart_char);                         // uuid    
-        app_assert_status(sc);
-        LOG_DISC("Discovering charateristic and success");
-        conn_state = discover_characteristics;
-        break;
-      }
+        case CENTRAL_DISCOVER_SERVICES:
+          if(candidate_device.cbap_service_handle != SERVICE_HANDLE_INVALID)
+          {
+            char_state = (characteristics_t)0; // First characteristic
+            sc = sl_bt_gatt_discover_characteristics_by_uuid(evt->data.evt_gatt_procedure_completed.connection,       // connection
+                                                             candidate_device.cbap_service_handle,                    // service
+                                                             sizeof(cbap_characteristics[char_state].uuid),           // uuid_len
+                                                             (const uint8_t*)cbap_characteristics[char_state].uuid);  // uuid    
+            app_assert_status(sc);
+            LOG_DISC("Discovering charateristic");
+            conn_state = CENTRAL_DISCOVER_CHARACTERISTICS;        
+          }
+          break;
+        
+        case CENTRAL_DISCOVER_CHARACTERISTICS:
+          char_state++; // Move on/Proceed to the subsequent characteristic
+          if(char_state < CHAR_NUM)
+          {
+            sc = sl_bt_gatt_discover_characteristics_by_uuid(evt->data.evt_gatt_procedure_completed.connection,       // connection
+                                                             candidate_device.cbap_service_handle,                    // service
+                                                             sizeof(cbap_characteristics[char_state].uuid),           // uuid_len
+                                                             (const uint8_t*)cbap_characteristics[char_state].uuid);  // uuid 
+            app_assert_status(sc);
+            LOG_DISC("Discovering charateristic"); 
+          }
+          else
+          {
+            // Discovered all cbap characteritic completely. 
+            // Enable indication and get Peripheral cert
+            LOG_DISC("Characteristic discovery was completed");
+            // Stop discovering
+            sl_bt_scanner_stop();
+            sc = sl_bt_gatt_set_characteristic_notification(evt->data.evt_gatt_procedure_completed.connection,
+                                                            cbap_characteristics[CHAR_PERIPHERAL_CERT].handle,
+                                                            sl_bt_gatt_indication);
+            app_assert_status(sc);
+            LOG_DISC("Get the Peripheral certifiacte");
+            conn_state = CENTRAL_GET_PERIPHERAL_CERT;
+          }
+          break;
+        
+        case CENTRAL_SEND_CENTRAL_CERT:
+          if(!device_cert_sent)
+          {
+            uint32_t remaining = device_certificate_der_len - dev_cert_sending_progression;
+            uint8_t buf[CERT_IND_CHUNK_LEN + 1];
+            uint8_t len;
 
-      // If characteristic discovery was completed successfully or failed with an error
-      // It will be join sl_bt_evt_gatt_characteristic_id event before returning this event
-      // -> enable indications
-      if(conn_state == discover_characteristics && conn_properties[table_index].usartpacket_characteristic_handle != CHARACTERISTIC_HANDLE_INVALID)
-      {
-        LOG_DISC("Characteristic discovery was completed");
-        // stop discovering
-        sl_bt_scanner_stop();
-        sc = sl_bt_gatt_set_characteristic_notification(evt->data.evt_gatt_procedure_completed.connection,
-                                                        conn_properties[table_index].usartpacket_characteristic_handle,
-                                                        sl_bt_gatt_indication);
-        app_assert_status(sc);
-        LOG_DISC("Set indication configuration flag into this characteristic");
-        conn_state = enable_indication;
-        break;                                                        
-      }
+            if(remaining > CERT_IND_CHUNK_LEN)
+            {
+              buf[0] = 1;
+              memcpy(&buf[1], &device_certificate_der[dev_cert_sending_progression], CERT_IND_CHUNK_LEN);
+              dev_cert_sending_progression += CERT_IND_CHUNK_LEN;
+              len = CERT_IND_CHUNK_LEN + 1;
+            }
+            else
+            {
+              buf[0] = 0;
+              memcpy(&buf[1], &device_certificate_der[dev_cert_sending_progression], remaining);
+              len = remaining + 1;
+              device_cert_sent = true;
+            }
+            sc = sl_bt_gatt_write_characteristic_value(candidate_device.connection_handle,
+                                                       cbap_characteristics[CHAR_CENTRAL_CERT].handle,
+                                                       len,
+                                                       (const uint8_t *)buf);
+            app_assert_status(sc);
+            LOG_CONN("Sends %u Central Certificate", len);
+          }
+          else
+          {
+            // Certificate exchange completed. Get passkey from Peripheral. Enable indication
+            sc = sl_bt_gatt_set_characteristic_notification(evt->data.evt_gatt_procedure_completed.connection,
+                                                            cbap_characteristics[CHAR_INITIATOR_PASSKEY].handle,
+                                                            sl_bt_gatt_indication);
+            app_assert_status(sc);
 
-      // If enabling indication finish, connect to other devices
-      if(conn_state == enable_indication)
-      {
-        if(active_connections_num < SL_BT_CONFIG_MAX_CONNECTIONS)
-        {
-          LOG_CONN("Active connection number %d\r\nStart scanning other devices", active_connections_num);
+            conn_state = CENTRAL_GET_PASSKEY;
+            LOG_CONN("Waiting a Passkey for Pairing process");  
+          }
+          break;
 
-          sc = sl_bt_scanner_start(sl_bt_scanner_scan_phy_1m,
-                                  sl_bt_scanner_discover_generic);
-          app_assert_status_f(sc, ">Failed to start discovery #2" APP_LOG_NL);
-          conn_state = scanning;
-        }
-        else
-        {
-          conn_state = running;
-        }
-        break;
+        case CENTRAL_CONFIG_SECURITY:
+          // Configuration according to constants set at compile time
+          // Configure security requirements and I/O capabilities of the system
+          sc = sl_bt_sm_configure(MITM_PROTECTION, IO_CAPABILITY);
+          app_assert_status(sc);
+          LOG_CONN("NUMERIC COMPARISION pairing mode");
+          LOG_CONN("Bonding with LE Secure mode, with authentication,...");
+
+          sc = sl_bt_sm_set_passkey(remote_passkey);
+          app_assert_status(sc);
+          LOG_CONN("Enter the fixed passkey for stack: %lu", remote_passkey);
+
+          sc = sl_bt_sm_set_bondable_mode(1);
+          app_assert_status(sc);
+          LOG_CONN("Bondings allowed");
+
+          sc = sl_bt_sm_delete_bondings();
+          app_assert_status(sc);
+          LOG_CONN("Old bondings deleted");
+          break;
+
+        case CENTRAL_DISCOVER_USART_C:
+          table_index = find_index_by_connection_handle(evt->data.evt_gatt_procedure_completed.connection);
+          if (table_index == TABLE_INDEX_INVALID)
+          {
+            LOG_ERROR("Not found table_index valid");
+            break;
+          }
+
+          sc = sl_bt_gatt_discover_characteristics_by_uuid(conn_properties[table_index].connection_handle,
+                                                           conn_properties[table_index].usart_service_handle,                    
+                                                           sizeof(usart_char),           
+                                                           (const uint8_t*)usart_char);  
+          if(sc == SL_STATUS_OK)
+          {
+            LOG_DISC("Discovering usart charateristic"); 
+            conn_state = CENTRAL_DISCOVER_USART_DONE;
+          }
+          else
+          {
+            LOG_ERROR("Not found usart characteristic 0x%04x\r\n\tScanning subsequently", (uint16_t)sc);
+            if(active_connections_num < SL_BT_CONFIG_MAX_CONNECTIONS)
+            {
+              LOG_SCANN("Active connection number %d\r\nStart scanning other devices", active_connections_num);
+
+              sc = sl_bt_scanner_start(sl_bt_scanner_scan_phy_1m,
+                                      sl_bt_scanner_discover_generic);
+              app_assert_status_f(sc, ">Failed to start discovery #2" APP_LOG_NL);
+              conn_state = CENTRAL_SCANNING;
+            }
+            break;
+          }
+          break;
+        
+        case CENTRAL_DISCOVER_USART_DONE:
+          table_index = find_index_by_connection_handle(evt->data.evt_gatt_procedure_completed.connection);
+          if (table_index == TABLE_INDEX_INVALID)
+          {
+            LOG_ERROR("Not found table_index valid");
+            break;
+          }
+
+          LOG_DISC("Usart characteristic discovery was completed");
+          sc = sl_bt_gatt_set_characteristic_notification(evt->data.evt_gatt_procedure_completed.connection,
+                                                          conn_properties[table_index].usartpacket_characteristic_handle,
+                                                          sl_bt_gatt_indication);
+          app_assert_status(sc);
+          conn_state = CENTRAL_DONE;
+          break;
+
+        default:
+          break;
       }
       break;
 
@@ -497,17 +610,18 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       app_assert_status(sc);
       LOG_BONDING("[SECURITY] All bonding deleted\r\n");
 
-      // remove connection from active connections
+      // Removes connection from active connections
+      reset_candidate_prop(&candidate_device);
       remove_connection(evt->data.evt_connection_closed.connection);
       LOG_CONN(">Connection is CLOSE. Active connections: %d\r\n", active_connections_num);
-      if (conn_state != scanning) 
+      if (conn_state != CENTRAL_SCANNING) 
       {
         // start scanning again to find new devices
         sc = sl_bt_scanner_start(sl_bt_scanner_scan_phy_1m,
                                  sl_bt_scanner_discover_generic);
         app_assert_status_f(sc, ">Failed to start discovery #3" APP_LOG_NL);
         LOG_SCANN(">RESTART scanning\r\n");
-        conn_state = scanning;
+        conn_state = CENTRAL_SCANNING;
       }
       break;
 
@@ -515,28 +629,102 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
     // This event is generated when a characteristic value was received e.g. an gatt server sends indication
     // or notification after enabling (clients) with api: sl_bt_gatt_set_characteristic_notification()
     case sl_bt_evt_gatt_characteristic_value_id:
-      table_index = find_index_by_connection_handle(evt->data.evt_gatt_characteristic_value.connection);
-      if(table_index == TABLE_INDEX_INVALID)
+      if (conn_state == CENTRAL_GET_PERIPHERAL_CERT)
       {
-        break;
-      }
+        // Get Peripheral certificate
+        // .value.data[0] is flag: last chunk or not
+        memcpy(&remote_certificate_der[remote_certificate_der_len],
+                &evt->data.evt_gatt_characteristic_value.value.data[1],
+                evt->data.evt_gatt_characteristic_value.value.len - 1);
+        remote_certificate_der_len += evt->data.evt_gatt_characteristic_value.value.len - 1;
 
-      if(evt->data.evt_gatt_characteristic_value.value.len > 0)
-      {
-        uint8_t *data = evt->data.evt_gatt_characteristic_value.value.data;
-        uint8_t len = evt->data.evt_gatt_characteristic_value.value.len;
-        
-        // Print and process Input data
-        if(defrag_push_data(data, len))
+        sc = sl_bt_gatt_send_characteristic_confirmation(evt->data.evt_gatt_characteristic_value.connection);
+        app_assert_status(sc);  
+        LOG_CONN("Received %u bytes of Peripheral Cert", evt->data.evt_gatt_characteristic_value.value.len - 1);
+        // Last chunk
+        if(evt->data.evt_gatt_characteristic_value.value.data[0] == 0)
         {
-          LOG_CONN("DONE PUSH data");
-          indi_state = handle_rxdata;
+          // Stop indication of gattdb_peripheral_cert 
+          // Completes "notification of stopping indication" procedure -> jump event procedure_id
+          sc = sl_bt_gatt_set_characteristic_notification(evt->data.evt_gatt_procedure_completed.connection,
+                                                          cbap_characteristics[CHAR_PERIPHERAL_CERT].handle,
+                                                          sl_bt_gatt_disable);  
+          app_assert_status(sc);   
+
+          remote_cert_arrived = true;
+          conn_state = CENTRAL_SEND_CENTRAL_CERT;
+          LOG_CONN("Prepares sending Central Certificate");
+
+          // Verify Peripheral Certificate
+          sc = sl_cbap_process_remote_cert(remote_certificate_der, remote_certificate_der_len);
+          if (sc == SL_STATUS_OK) 
+          {
+            LOG_CONN("Remote certificate verified");
+            remote_cert_verified = true;
+          } 
+          else 
+          {
+            LOG_ERROR("Remote certificate verification failed");
+            (void)sl_bt_connection_close(candidate_device.connection_handle);
+            reset_candidate_prop(&candidate_device);
+            break;
+          }
         }
       }
+      else if(conn_state == CENTRAL_GET_PASSKEY)
+      {
+        uint8_t remote_pass_dt[PASSKEY_LEN];
+        uint8_t remote_pass_signature[SIGNATURE_LEN];
+        memcpy(remote_pass_dt, &evt->data.evt_gatt_characteristic_value.value.data[0], PASSKEY_LEN);
+        memcpy(remote_pass_signature, &evt->data.evt_gatt_characteristic_value.value.data[PASSKEY_LEN], SIGNATURE_LEN);
 
-      sc = sl_bt_gatt_send_characteristic_confirmation(evt->data.evt_gatt_characteristic_value.connection);
-      app_assert_status(sc);
-      LOG_CONN("Send an indication confirmation");
+        // Confirms
+        sc = sl_bt_gatt_send_characteristic_confirmation(evt->data.evt_gatt_characteristic_value.connection);
+        app_assert_status(sc);
+        sc = sl_bt_gatt_set_characteristic_notification(evt->data.evt_gatt_procedure_completed.connection,
+                                                        cbap_characteristics[CHAR_PERIPHERAL_CERT].handle,
+                                                        sl_bt_gatt_disable);  
+        app_assert_status(sc);   
+
+        LOG_CONN("Remote PassKey:");
+        app_log_hexdump_info(remote_pass_dt, PASSKEY_LEN);
+        app_log_info(APP_LOG_NL);
+        LOG_CONN("Remote Device Signature:");
+        app_log_hexdump_info(remote_pass_signature, SIGNATURE_DATA_LEN);  
+        app_log_info(APP_LOG_NL);
+
+        // Verifies
+        sc = sl_cbap_verify_signed_passkey(remote_pass_dt, remote_pass_signature);
+        app_assert_status(sc);
+        LOG_CONN("Remote Passkey Data verified");
+        sc = sl_cbap_destroy_key();
+        app_assert_status(sc);
+
+        // Get passkey in uint32_t format
+        remote_passkey = (uint32_t)remote_pass_dt[0] | (uint32_t)(remote_pass_dt[1] << 8) \
+                         | (uint32_t)(remote_pass_dt[2] << 16) | (uint32_t)(remote_pass_dt[3] << 24);
+        LOG_CONN("Remote Passkey: %lu", remote_passkey);
+        conn_state = CENTRAL_CONFIG_SECURITY;
+      }
+      else if(conn_state == CENTRAL_DONE)
+      {
+        if(evt->data.evt_gatt_characteristic_value.value.len > 0)
+        {
+          uint8_t *data = evt->data.evt_gatt_characteristic_value.value.data;
+          uint8_t len = evt->data.evt_gatt_characteristic_value.value.len;
+          
+          // Print and process Input data
+          if(defrag_push_data(data, len))
+          {
+            LOG_CONN("DONE PUSH data");
+            data_state = PROCEED;
+          }
+        }
+
+        sc = sl_bt_gatt_send_characteristic_confirmation(evt->data.evt_gatt_characteristic_value.connection);
+        app_assert_status(sc);
+        LOG_CONN("Send an indication confirmation");
+      }
       break;
     
     // -------------------------------
@@ -549,12 +737,15 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
           LOG_PAIRING("[SEC-LEVEL] No Security");
           break;
         case sl_bt_connection_mode1_level2:
+          LOG_PAIRING("CBAP procedure complete");
           LOG_PAIRING("[SEC-LEVEL] Encryption without unauthenticated (JustWorks)");
           break;
         case sl_bt_connection_mode1_level3:
+          LOG_PAIRING("CBAP procedure complete");
           LOG_PAIRING("[SEC-LEVEL] Authenticated pairing with encryption (Legacy Pairing)");
           break;
         case sl_bt_connection_mode1_level4:
+          LOG_PAIRING("CBAP procedure complete");
           LOG_PAIRING("[SEC-LEVEL] Authenticated LL Secure Connections with encryption");
           break;
         default:
@@ -576,29 +767,34 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
     // Identifier of the passkey_display event
     case sl_bt_evt_sm_passkey_display_id:
       // Display passkey
-      LOG_PAIRING("evt_passkey_display Passkey: %lu\r\n", evt->data.evt_sm_passkey_display.passkey);
-      passkey = evt->data.evt_sm_passkey_display.passkey;
-      state = DISPLAY_PASSKEY;
+      LOG_PAIRING("evt_passkey_display Passkey: %lu", 
+                   evt->data.evt_sm_passkey_display.passkey);
+      remote_passkey = evt->data.evt_sm_passkey_display.passkey;
+
       refresh_display();
+      state = DISPLAY_PASSKEY;
       break;
 
     // -------------------------------
     // Identifier of the confirm_passkey event
     case sl_bt_evt_sm_confirm_passkey_id:
-      LOG_PAIRING("Passkey confirmation event received");
-      passkey = evt->data.evt_sm_confirm_passkey.passkey;  //CORRECT EVENT DATA
+      LOG_PAIRING("Passkey confirmation event received %lu",
+                   evt->data.evt_sm_confirm_passkey.passkey);  
 
       // Enable button service for user input
       app_button_pairing_enable();
 
-      state = PROMPT_YESNO;
       refresh_display();
+      state = PROMPT_YESNO;
       break;
 
     // -------------------------------
     // Triggered when the pairing or bonding procedure is successfully completed.
     case sl_bt_evt_sm_bonded_id:
       LOG_BONDING("Bond success, bonding handle 0x%02x", evt->data.evt_sm_bonded.bonding);
+
+      // Adds the candidate device to the trusted device array (conn_properties)
+      add_connection();
 
       //  * Discover primary services with the specified UUID in a remote GATT database.
       //  * This command generates unique gatt_service event for every discovered primary
@@ -607,28 +803,28 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       sc = sl_bt_gatt_discover_primary_services_by_uuid(evt->data.evt_sm_bonded.connection,
                                                         sizeof(usart_service),
                                                         (const uint8_t *)usart_service);
-      if (sc == SL_STATUS_INVALID_HANDLE) 
-      {       
-        // Not found service with given UUID      
-        // Failed to open connection, restart scanning  
-        LOG_DISC(">Primary service discovery failed with invalid handle, dropping client");
-        sc = sl_bt_connection_close(evt->data.evt_sm_bonded.connection);
-        LOG_DISC("Close connection");
-
-        sc = sl_bt_scanner_start(sl_bt_gap_phy_1m, sl_bt_scanner_discover_generic);
-        app_assert_status(sc);
-        conn_state = scanning;
-        break;
-      } 
-      else 
+      if(sc == SL_STATUS_OK)
       {
-        app_assert_status(sc);
-        LOG_DISC("-> Confirm the existence of my service in remote GATT database");
-      } 
+        LOG_DISC("Discovering usart serivce"); 
+      }
+      else
+      { 
+        LOG_ERROR("Not found uasrt serivce 0x%04x\n\r\tScanning subsequently", (uint16_t)sc);
+        if(active_connections_num < SL_BT_CONFIG_MAX_CONNECTIONS)
+        {
+          LOG_CONN("Active connection number %d\r\nStart scanning other devices", active_connections_num);
 
-      state = BOND_SUCCESS;
-      conn_state = discover_services;
+          sc = sl_bt_scanner_start(sl_bt_scanner_scan_phy_1m,
+                                  sl_bt_scanner_discover_generic);
+          app_assert_status_f(sc, ">Failed to start discovery #2" APP_LOG_NL);
+          conn_state = CENTRAL_SCANNING;
+        }
+        break;
+      }
+
       refresh_display();
+      state = BOND_SUCCESS;
+      conn_state = CENTRAL_DISCOVER_USART_C;
       break;
 
     // Bonding failed, not affect the connection and exchange
@@ -638,8 +834,8 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
       sc = sl_bt_connection_close(evt->data.evt_sm_bonding_failed.connection);
       LOG_BONDING("CLOSE connection");
 
-      state = BOND_FAILURE;
       refresh_display();
+      state = BOND_FAILURE;
       break;
 
     case sl_bt_evt_system_external_signal_id:
@@ -649,11 +845,12 @@ void sl_bt_on_event(sl_bt_msg_t *evt)
         // Disable button service after user input
         // app_button_pairing_disable();
 
-        LOG_PAIRING("User prompted to enter passkey: %lu", passkey);
-        sc = sl_bt_sm_passkey_confirm(temp_connec_handle, 1);
+        LOG_PAIRING("User prompted to enter passkey: %lu", remote_passkey);
+        sc = sl_bt_sm_passkey_confirm(candidate_device.connection_handle, 1);
         if(sc == SL_STATUS_OK)
         {
           LOG_PAIRING("Passkey confirmed");
+          conn_state = CENTRAL_DISCOVER_USART_S;
         }
       }
       break;
@@ -678,14 +875,18 @@ static void init_properties(void)
   uint8_t i;
   active_connections_num = 0;
 
+  reset_candidate_prop(&candidate_device);
+
   for (i = 0; i < SL_BT_CONFIG_MAX_CONNECTIONS; i++) {
     conn_properties[i].connection_handle = CONNECTION_HANDLE_INVALID;
     conn_properties[i].usart_service_handle = SERVICE_HANDLE_INVALID;
+    conn_properties[i].cbap_service_handle = SERVICE_HANDLE_INVALID;
     conn_properties[i].usartpacket_characteristic_handle = CHARACTERISTIC_HANDLE_INVALID;
     conn_properties[i].rssi = SL_BT_CONNECTION_RSSI_UNAVAILABLE;    // in sl_bt_api.h file          
     conn_properties[i].power_control_active = TX_POWER_CONTROL_INACTIVE;
     conn_properties[i].tx_power = TX_POWER_INVALID;
     conn_properties[i].remote_tx_power = TX_POWER_INVALID;
+    memset(&conn_properties[i].address.addr[0], 0xff, 6);
   }
 }
 
@@ -762,21 +963,22 @@ static sl_status_t find_service_in_advertisement(uint8_t *data, uint8_t len)
     ad_field_length = data[i];
     ad_field_type = data[i + 1];
 
-    if(ad_field_type == 0x06 || ad_field_type == 0x07)    //ad_field_type == 0x02 || ad_field_type == 0x03 ||
+    if(ad_field_type == GAP_COMPLETE_128B_UUID || ad_field_type == GAP_INCOMPLETE_128B_UUID
+       || ad_field_type == GAP_COMPLETE_16B_UUID || ad_field_type == GAP_INCOMPLETE_16B_UUID)    // ad_field_type == 0x02 || 0x03 || 0X06 || 0X07
     {
-      if(memcmp(&data[i+2], current_time_service, 2) == 0)
+      if(memcmp(&data[i+2], cbap_service_uuid, 16) == 0)
       {
+        LOG_SCANN("Found CBAP service's UUID");
         return SL_STATUS_OK;
       }
-      else if (memcmp(&data[i+2], usart_service, 16) == 0)
+      else if(memcmp(&data[i+2], usart_service, 16) == 0)
       {
-        LOG_SCANN("Found my service's UUID");
+        LOG_SCANN("Found usart service's UUID");
         return SL_STATUS_OK;
       }
     }
     // advance to the next AD struct
     i = i + ad_field_length + 1;
-    // sl_sleeptimer_delay_millisecond(10);
   }
 
   return SL_STATUS_FAIL;
@@ -795,7 +997,6 @@ static sl_status_t find_service_in_advertisement(uint8_t *data, uint8_t len)
  */
 static uint8_t find_index_by_connection_handle(uint8_t connection)
 {
-  // i will be adapt active_connections_num
   for (uint8_t i = 0; i < active_connections_num; i++) 
   {
     if (conn_properties[i].connection_handle == connection) 
@@ -816,11 +1017,19 @@ static uint8_t find_index_by_connection_handle(uint8_t connection)
  * @param[in] connection The connection handle assigned by the stack
  * @param[in] address    Pointer to a 6-byte Bluetooth address (LSB-first ordering)
  */
-static void add_connection(uint8_t connection, uint8_t *address)
+static void add_connection(void)
 {
-  conn_properties[active_connections_num].connection_handle = connection;
-  memcpy(conn_properties[active_connections_num].server_address, address, 6);
+  conn_properties[active_connections_num].connection_handle = candidate_device.connection_handle;
+  conn_properties[active_connections_num].cbap_service_handle = candidate_device.cbap_service_handle;
+  memcpy(conn_properties[active_connections_num].server_address, &candidate_device.address.addr[0], 6);
   active_connections_num++;
+
+  LOG_INFO("  Trusted device [%u] added", conn_properties[active_connections_num].connection_handle);
+  LOG_CONN("\tReserved the addr of server device: ");
+  for(int i = 5; i >= 0; i--)
+    printf("%02X ", conn_properties[active_connections_num].server_address[i]);
+  printf("\r\n");
+  
 }
 
 /**
@@ -847,11 +1056,47 @@ static void remove_connection(uint8_t connection)
   {
     conn_properties[i].connection_handle = CONNECTION_HANDLE_INVALID;
     conn_properties[i].usart_service_handle = SERVICE_HANDLE_INVALID;
+    conn_properties[i].cbap_service_handle = SERVICE_HANDLE_INVALID;
     conn_properties[i].usartpacket_characteristic_handle = CHARACTERISTIC_HANDLE_INVALID;
     conn_properties[i].rssi = SL_BT_CONNECTION_RSSI_UNAVAILABLE;
     conn_properties[i].power_control_active = TX_POWER_CONTROL_INACTIVE;
     conn_properties[i].tx_power = TX_POWER_INVALID;
     conn_properties[i].remote_tx_power = TX_POWER_INVALID;
+    memset(&conn_properties[i].address.addr[0], 0xff, 6);
+  }
+}
+
+/**
+ * @brief Resets all the information of candidate's connnection properties and
+ *        state of connection process once/everytime a new connection is made
+ * 
+ * @param dev Pointer to the conn_properties_t
+ */
+static inline void reset_candidate_prop(conn_properties_t *dev) 
+{
+  // Reset state
+  conn_state = (central_state_t)0;
+  char_state = (characteristics_t)0;
+  state = IDLE;
+
+  // Reset flags
+  remote_cert_arrived = false;
+  remote_cert_verified = false;
+  device_cert_sent = false;
+  remote_certificate_der_len = 0;
+  remote_passkey = 0;
+
+  if (dev) 
+  {
+      dev->connection_handle = CONNECTION_HANDLE_INVALID;
+      dev->usart_service_handle = SERVICE_HANDLE_INVALID;
+      dev->cbap_service_handle = SERVICE_HANDLE_INVALID;
+      dev->usartpacket_characteristic_handle = CHARACTERISTIC_HANDLE_INVALID;
+      dev->rssi = SL_BT_CONNECTION_RSSI_UNAVAILABLE;
+      dev->power_control_active = TX_POWER_CONTROL_INACTIVE;
+      dev->tx_power = TX_POWER_INVALID;
+      dev->remote_tx_power = TX_POWER_INVALID;
+      memset(&dev->address.addr[0], 0xff, 6);
   }
 }
 
@@ -973,12 +1218,12 @@ void refresh_display(void)
   case IDLE:
     break;
   case DISPLAY_PASSKEY:
-    sprintf(passkey_display_string, "PASS: %lu", passkey);
+    sprintf(passkey_display_string, "PASS: %lu", remote_passkey);
     graphics_AppendString(passkey_display_string);
     break;
   case PROMPT_YESNO:
     graphics_clear_PreviousString();
-    sprintf(passkey_display_string, "PASS: %lu", passkey);
+    sprintf(passkey_display_string, "PASS: %lu", remote_passkey);
     graphics_AppendString(passkey_display_string);
     graphics_AppendString("   NO      YES");
     break;
